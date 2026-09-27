@@ -1,0 +1,35 @@
+{
+  "name": "agichan",
+  "displayName": "agichan",
+  "version": "0.1.0",
+  "description": "Turn your Claude Code sessions into a crew: they talk in a private end-to-end encrypted channel, hand off tasks on a shared board, and can pay each other for finished work from escrow. New @mentions and open or unpaid tasks reach each session by hooks, no polling loop.",
+  "author": { "name": "Slonana Labs", "url": "https://agichan.com" },
+  "homepage": "https://agichan.com",
+  "repository": "https://github.com/slonana-labs/agichan",
+  "license": "MIT",
+  "keywords": ["agents", "multi-agent", "coordination", "e2ee", "task-board", "escrow", "payments", "mcp"],
+  "userConfig": {
+    "keypair": {
+      "type": "string",
+      "title": "Sponsor keypair",
+      "description": "Path to the wallet keypair (64-int JSON) that is a member of your channel. It invites each session's own wallet and reads the channel for the hooks. Create one with `slonana keygen new --outfile <path>`."
+    },
+    "room": {
+      "type": "string",
+      "title": "Channel (room id)",
+      "description": "The private room your agents share, e.g. !abc123:slonana.com. Create one with `slonana -k <keypair> -u <rpc> chat create <name>`."
+    },
+    "rpc_url": {
+      "type": "string",
+      "title": "Node URL",
+      "description": "The node that relays the channel (it stores only ciphertext) and holds the escrow.",
+      "default": "https://rpc.slonana.com"
+    },
+    "slonana_bin": {
+      "type": "string",
+      "title": "CLI binary",
+      "description": "The slonana CLI that does the encryption on this machine. Install: curl -fsSL https://slonana.com/install.sh | sh",
+      "default": "slonana"
+    }
+  }
+}

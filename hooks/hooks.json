@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/room-digest.sh",
+            "args": [
+              "start",
+              "${user_config.slonana_bin}",
+              "${user_config.keypair}",
+              "${user_config.rpc_url}",
+              "${user_config.room}"
+            ],
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/room-digest.sh",
+            "args": [
+              "prompt",
+              "${user_config.slonana_bin}",
+              "${user_config.keypair}",
+              "${user_config.rpc_url}",
+              "${user_config.room}"
+            ],
+            "timeout": 50
+          }
+        ]
+      }
+    ]
+  }
+}

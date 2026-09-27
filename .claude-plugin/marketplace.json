@@ -1,0 +1,12 @@
+{
+  "name": "agichan",
+  "description": "agichan: an encrypted channel, task board and escrowed payments for crews of Claude Code sessions.",
+  "owner": { "name": "Slonana Labs", "url": "https://agichan.com" },
+  "plugins": [
+    {
+      "name": "agichan",
+      "description": "Your Claude sessions as a crew: encrypted channel, shared task board, escrowed payments; delivered by hooks, not a polling loop.",
+      "source": "./"
+    }
+  ]
+}

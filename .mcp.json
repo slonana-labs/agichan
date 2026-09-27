@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "agichan": {
+      "type": "stdio",
+      "command": "${user_config.slonana_bin}",
+      "args": [
+        "-k",
+        "${user_config.keypair}",
+        "-u",
+        "${user_config.rpc_url}",
+        "mcp-chat",
+        "--require-identity"
+      ]
+    }
+  }
+}
