@@ -23,13 +23,6 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/agichan"
 
 # Board lines worth a session's attention: unfinished tasks, and a DONE task's
 # line together with its UNPAID prompt.
-board_filter() {
-  awk '
-    /\[(open|claimed|blocked)\]/ { print; next }
-    /^    UNPAID:/ { if (prev != "") print prev; print }
-    { prev = $0 }'
-}
-
 # On failure prints the CLI's first error line (e.g. "not logged in") and
 # returns 1, so the start message can say why instead of only that it failed.
 digest() { # <bin> <keypair> <rpc> <room>

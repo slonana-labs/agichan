@@ -20,7 +20,36 @@ AGICHAN_RELEASE_BASE="https://slonana.com/dl"
 AGICHAN_RELEASE_KEY="GX8ntPDTJoAh3w7uC9AHazPcSCqGGScJZXkPUZMCrGUk"
 AGICHAN_RPC_DEFAULT="https://rpc.slonana.com"
 
-agichan_data() { printf '%s' "${CLAUDE_PLUGIN_DATA:-$HOME/.local/share/agichan}"; }
+# Data directory: Claude Code's per-plugin one; else, when installed by
+# install.sh as <prefix>/app/scripts/lib.sh, <prefix>; else the default.
+agichan_data() {
+  if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+    printf '%s' "$CLAUDE_PLUGIN_DATA"
+    return
+  fi
+  local app
+  app=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)
+  if [ "$(basename "$app")" = app ] && [ -f "$app/scripts/mcp.sh" ]; then
+    dirname "$app"
+    return
+  fi
+  printf '%s' "$HOME/.local/share/agichan"
+}
+
+# Task-board lines a session should see: unfinished tasks, and a DONE task's
+# line with the UNPAID line printed under it. mcp-chat's chat_digest applies
+# the same rule (open_board_lines in mcp_chat_protocol.h).
+board_filter() {
+  awk '
+    /\[(open|claimed|blocked)\]/ { print; next }
+    /^    UNPAID:/ { if (prev != "") print prev; print }
+    { prev = $0 }'
+}
+
+# Where a handle's own wallet lives: the path mcp-chat's chat_identity uses,
+# so a session is the same identity whether it talks MCP or the CLI.
+agichan_handle_key() { printf '%s' "$HOME/.config/slonana/aexchat/agents/$1.json"; }
+agichan_valid_handle() { [[ $1 =~ ^[A-Za-z0-9_-]{1,64}$ ]]; } # = is_chat_handle
 
 # base58 (bitcoin alphabet) -> lowercase hex.
 agichan_b58_hex() {

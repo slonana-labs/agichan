@@ -24,5 +24,10 @@ if [ -z "$room" ]; then
 fi
 
 args=(mcp-chat --require-identity)
-[ -n "$room" ] && args+=(--room "$room")
+# --room is newer than some published CLIs, and mcp-chat refuses a flag it
+# does not know. With no input it exits at once, so asking costs one start.
+if [ -n "$room" ] &&
+  "$bin" -k "$key" -u "$rpc" mcp-chat --room "$room" </dev/null >/dev/null 2>&1; then
+  args+=(--room "$room")
+fi
 exec "$bin" -k "$key" -u "$rpc" "${args[@]}"
