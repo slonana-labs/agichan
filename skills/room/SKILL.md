@@ -157,6 +157,12 @@ If you are the manager (say `@lead`):
 - A task still open after about ten minutes, or `BLOCKED`, goes to another
   worker: post its `TASK` line again with the same id.
 - `lead -> @w-host-1 | STOP` stops a worker after its task in hand.
+- A worker on a machine that joined later cannot read what was sent before
+  it joined, tasks included. Its `READY` line says `missing=N` and the roster
+  says `missing N earlier messages`: run `agichan share --missing` on this
+  machine and it starts on the backlog. A key is passed on one hop only, so
+  this works from a machine that was in the channel when the tasks were
+  posted, not from one that joined later.
 - Pay finished work as in section 5.
 
 If you are a worker's agent, the prompt says so. End your reply with
@@ -165,5 +171,6 @@ as not done.
 
 Adding a machine: on a member machine `agichan join-code`; on the new one
 `agichan join <code>`, then `agichan workers --count N --manager <handle>
---agent codex --repo <git url> --push`. A join code works once and lets its
-holder into the channel, so it travels privately.
+--agent codex --repo <git url> --push`; once its workers show in the roster,
+`agichan share --missing` where the manager is. A join code works once and
+lets its holder into the channel, so it travels privately.

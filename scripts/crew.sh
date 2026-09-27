@@ -146,8 +146,12 @@ crew_one_line() { tr '\n\r\t' '   ' | tr -s ' ' | sed 's/^ //; s/ $//' | head -c
 # worker then claims at once and the rest wait their rank, so W idle workers
 # do not all post a CLAIM for one task. Measured on 30 @ALL tasks and 10
 # workers: 120 of 150 CLAIM lines lost the race when all took the oldest.
+# A worker's `missing=N` (from its READY line): messages it holds no key for,
+# 0 when it says nothing. One definition for every reader of it.
+CREW_JQ_MISSING='def missing: [(.detail // "") | match("(?:^| )missing=([0-9]+)") | .captures[0].string | tonumber] | first // 0;'
+
 crew_next_task() { # <board json> <me> <mgr>
-  jq -r --arg me "$2" --arg mgr "$3" '
+  jq -r --arg me "$2" --arg mgr "$3" "$CREW_JQ_MISSING"'
     def mix($s): reduce ($s | explode[]) as $c (.; (. * . + $c * 7919 + 1) % 67108859);
     def rh($w; $t): 12345 | mix($t) | mix(":") | mix($w) | mix($t);
     . as $b
@@ -156,9 +160,12 @@ crew_next_task() { # <board json> <me> <mgr>
     | if ($mine | length) > 0 then "\($mine[0].id) 0"
       else
         [$b.tasks[] | select(.state == "claimed") | .owner] as $busy
+        # A worker that cannot read earlier messages may not see the task,
+        # so nobody waits its turn.
         | ([($b.workers // {}) | to_entries[]
             | select(.value.state == "ready"
-                and (.value.stop_by == "" or .value.stop_ts_ms <= .value.state_ts_ms))
+                and (.value.stop_by == "" or .value.stop_ts_ms <= .value.state_ts_ms)
+                and (.value | missing) == 0)
             | .key] - $busy - [$me]) as $idle
         | [$open[] | select(.owner == "ALL") | . as $t
             | rh($me; $t.id) as $mine_h
@@ -234,6 +241,7 @@ crew_git_finish() { # <dir> <id> <title> <push: 0|1>
 crew_worker() { # <me> <mgr> <agent> <dir> <poll s> <timeout s> <once> <git> <push> <max tasks>
   local me=$1 mgr=$2 agent=$3 dir=$4 poll=$5 tmo=$6 once=$7 usegit=$8 push=$9 max=${10}
   local key wd stopf started board id title holder stale ready_ts=0 stop_ts pinned="" s n=0 base="" swept=0 try rank
+  local ready miss said=0
   command -v jq >/dev/null 2>&1 || { echo "agichan: worker needs jq" >&2; return 2; }
   crew_has_board_json "$bin" ||
     { echo "agichan: worker needs a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)" >&2; return 2; }
@@ -249,8 +257,8 @@ crew_worker() { # <me> <mgr> <agent> <dir> <poll s> <timeout s> <once> <git> <pu
     base=$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null) ||
       { echo "agichan: --git needs $dir to be a git checkout on a branch" >&2; return 2; }
   fi
-  crew_post "$key" "$me -> @$mgr | READY host=$(hostname -s 2>/dev/null || echo unknown) agent=$(crew_agent_name "$agent")" ||
-    echo "agichan: @$me could not post READY" >&2
+  ready="READY host=$(hostname -s 2>/dev/null || echo unknown) agent=$(crew_agent_name "$agent")"
+  crew_post "$key" "$me -> @$mgr | $ready" || echo "agichan: @$me could not post READY" >&2
   while :; do
     if [ -s "$stopf" ] && [ "$(cat "$stopf")" -ge "$started" ] 2>/dev/null; then break; fi
     if ! board=$(crew_board "$key") || [ -z "$board" ]; then
@@ -266,6 +274,14 @@ crew_worker() { # <me> <mgr> <agent> <dir> <poll s> <timeout s> <once> <git> <pu
     [ "$ready_ts" = 0 ] && ready_ts=$(jq -r --arg me "$me" '.workers[$me].state_ts_ms // 0' <<<"$board")
     stop_ts=$(jq -r --arg me "$me" --arg m "$mgr" '.workers[$me] | select(.stop_by == $m) | .stop_ts_ms' <<<"$board")
     if [ -n "$stop_ts" ] && [ "$stop_ts" -gt "$ready_ts" ]; then break; fi
+    # Messages this worker holds no key for, tasks among them: those sent
+    # before its machine joined. Said when that starts and when it ends, so
+    # the machine that has them can share them (agichan share --missing).
+    miss=$(jq -r '.not_counted.no_key // 0' <<<"$board")
+    [[ $miss =~ ^[0-9]+$ ]] || miss=0
+    if [ "$((miss > 0))" != "$((said > 0))" ] && crew_post "$key" "$me -> @$mgr | $ready missing=$miss"; then
+      said=$miss
+    fi
     # Work this handle held when an earlier run of it stopped goes back to
     # the manager: nobody else can claim it, and resuming blind is worse.
     if [ "$swept" = 0 ]; then
@@ -482,7 +498,7 @@ crew_workers_list() {
 # The channel's workers, what each holds, and open work nobody has picked up:
 # what a manager needs to assign and reassign.
 crew_roster() { # <board json> <now ms>
-  jq -r --argjson now "$2" '
+  jq -r --argjson now "$2" "$CREW_JQ_MISSING"'
     def ago(ms): if ms <= 0 then "-" else (($now - ms) / 1000 | floor) as $s
       | if $s < 60 then "\($s)s" elif $s < 3600 then "\($s / 60 | floor)m"
         else "\($s / 3600 | floor)h" end end;
@@ -492,15 +508,69 @@ crew_roster() { # <board json> <now ms>
        | if ($ws | length) == 0 then "  (none)" else
          ($ws[] | .key as $h
           | [$b.tasks[] | select(.owner == $h and .state == "claimed") | .id] as $busy
+          | (.value | missing) as $m
           | "  @\($h)  " + (if .value.state == "bye" then "gone"
               elif .value.stop_by != "" and .value.stop_ts_ms > .value.state_ts_ms then "stopping"
               elif ($busy | length) > 0 then "busy " + ($busy | join(","))
               else "idle" end)
-            + "  seen \(ago(.value.last_seen_ms)) ago  \(.value.detail)") end),
+            + "  seen \(ago(.value.last_seen_ms)) ago  \((.value.detail // "") | gsub(" ?missing=[0-9]+"; ""))"
+            + (if $m > 0 and .value.state == "ready" then "  missing \($m) earlier messages" else "" end)) end),
+      (if [$b.workers[] | select(.state == "ready") | missing] | any(. > 0)
+       then "  (workers missing earlier messages cannot see tasks posted before they joined:"
+         + " run agichan share --missing where the manager is)" else empty end),
       "open tasks:",
       ([$b.tasks[] | select(.state == "open")] as $open
        | if ($open | length) == 0 then "  (none)" else
          ($open[] | "  \(.id)  @\(.owner)  assigned \(ago(.assigned_ms)) ago by @\(.creator)  \(.title)") end)' <<<"$1"
+}
+
+# ---- earlier messages ------------------------------------------------------------
+
+# Gives workers this machine's keys for the channel's last 1000 messages. A
+# worker on a machine that joined later holds no key for what was sent before
+# it joined, tasks included, so it cannot see them. A key goes one hop (a
+# device passes on only keys it got from their sender), so run this where the
+# manager is, or on any machine that was in the channel when they were sent.
+# The relay takes at most 64 keys for one worker in one upload and stores none
+# past that. Any member can post a READY line, so --missing shares with
+# whoever says it lacks messages: the channel is the trust boundary, as it is
+# for a join code.
+crew_share() { # <board json, as this machine's sponsor reads it> --missing | <handle>...
+  local b=$1 h uid out mine rc=0
+  local -a hs=()
+  shift
+  if [ "${1:-}" = --missing ]; then
+    while IFS= read -r h; do hs+=("$h"); done < <(jq -r "$CREW_JQ_MISSING"'
+      .workers | to_entries[] | select(.value.state == "ready" and (.value | missing) > 0) | .key' <<<"$b")
+    [ "${#hs[@]}" -gt 0 ] || { echo "agichan: no worker says it is missing earlier messages"; return 0; }
+  else
+    hs=("$@")
+  fi
+  mine=$(jq -r '.not_counted.no_key // 0' <<<"$b")
+  [ "$mine" = 0 ] ||
+    echo "agichan: this machine has no key for $mine recent message(s) either, so it cannot pass those on" >&2
+  for h in "${hs[@]}"; do
+    h=${h#@}
+    agichan_valid_handle "$h" || { echo "agichan: $h is not a handle" >&2; rc=1; continue; }
+    # The wallet its latest counted line came from; an idle worker bound only
+    # by its sponsor's MOVE is in no window binding after the first read.
+    uid=$(jq -r --arg h "$h" '[.workers[$h].sender, .handles[$h]] | map(select(. != null and . != "")) | first // empty' <<<"$b")
+    if [ -z "$uid" ]; then
+      echo "agichan: @$h has no line on the board yet; nothing to share with" >&2
+      rc=1
+      continue
+    fi
+    if ! out=$("$bin" -k "$sponsor" -u "$rpc" chat forward "$room" "$uid" --limit 1000 "${strict[@]}" 2>&1); then
+      echo "agichan: could not share with @$h: $(crew_one_line 300 <<<"$out")" >&2
+      rc=1
+    elif [[ $out == "forwarded 0 "* ]]; then
+      echo "agichan: this machine holds no key to share with @$h: run agichan share where the manager is" >&2
+      rc=1
+    else
+      echo "agichan: @$h: $(crew_one_line 300 <<<"$out")"
+    fi
+  done
+  return "$rc"
 }
 
 # ---- self-test -----------------------------------------------------------------------
@@ -526,6 +596,9 @@ case " $* " in
   *" keygen new "*) while [ $# -gt 0 ]; do [ "$1" = --outfile ] && echo '[1, 2, 3]' >"$2"; shift; done ;;
   *" address "*) echo "W_$(basename "${3:-x}" .json | cut -d- -f1)" ;;
   *" join "*) [ -f "$d/join-fails" ] && exit 1 ;;
+  *" chat forward "*) m=$(cat "$d/forward-mode" 2>/dev/null)
+    [ "$m" = fail ] && { echo "chat: keys/share: M_TOO_LARGE (nothing forwarded)" >&2; exit 1; }
+    echo "forwarded $([ "$m" = zero ] && echo 0 || echo 3) key(s) for 5 event(s) to $8 (1 device(s))" ;;
   *" chat login "*) if [ -f "$d/login-limited" ]; then
       n=$(cat "$d/login.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$d/login.n"; [ "$n" -ge 1 ] || exit 1; fi ;;
   *" chat tasks "*)
@@ -548,9 +621,9 @@ EOF
   calls() { tail -n +$((n0 + 1)) "$t/calls.log" | cut -d'|' -f1,2; }
   lines() { tail -n +$((n0 + 1)) "$t/calls.log" | grep ' send ' | cut -d'|' -f3-; }
   scenario() { k=$((k + 1)); mkdir -p "$t/s$k"; printf '%s' "$t/s$k" >"$t/board.dir"; mark; }
-  board() { # <n|last> <tasks json> [workers json] [handles json]
-    printf '{"tasks":%s,"handles":%s,"workers":%s,"not_counted":{"no_key":0,"unverified":0}}' \
-      "$2" "${4:-{\"lead\":\"@L:x\"\}}" "${3:-{\}}" >"$(cat "$t/board.dir")/board.$1.json"
+  board() { # <n|last> <tasks json> [workers json] [handles json] [no_key]
+    printf '{"tasks":%s,"handles":%s,"workers":%s,"not_counted":{"no_key":%s,"unverified":0}}' \
+      "$2" "${4:-{\"lead\":\"@L:x\"\}}" "${3:-{\}}" "${5:-0}" >"$(cat "$t/board.dir")/board.$1.json"
   }
 
   # Join codes.
@@ -768,6 +841,10 @@ EOF
     "$(crew_next_task "{\"tasks\":[$a1],\"workers\":{\"w1\":$rdy,\"$other1\":$rdy,\"$ahead2\":$rdy}}" w1 lead)" "a1 2"
   ck "the same two, one busy and one stopping, are not ranked: w1 is first" \
     "$(crew_next_task "{\"tasks\":[$a1,{\"id\":\"b1\",\"state\":\"claimed\",\"owner\":\"$other1\",\"creator\":\"lead\",\"title\":\"x\",\"assigned_ms\":1}],\"workers\":{\"w1\":$rdy,\"$other1\":$rdy,\"$ahead2\":$stopping}}" w1 lead)" "a1 0"
+  local blind='{"state":"ready","detail":"host=b agent=claude missing=4","state_ts_ms":1,"stop_by":"","stop_ts_ms":0}'
+  ck "the worker ahead of w1, missing earlier messages, is not ranked: w1 is first; at missing=0 it is again" \
+    "$(crew_next_task "{\"tasks\":[$a1],\"workers\":{\"w1\":$rdy,\"$other1\":$blind}}" w1 lead) $(crew_next_task "{\"tasks\":[$a1],\"workers\":{\"w1\":$rdy,\"$other1\":${blind/missing=4/missing=0}}}" w1 lead)" \
+    "a1 0 a1 1"
   export CREW_RANK_S=0
   scenario
   printf '{"tasks":[%s],"workers":{"w1":%s,"%s":%s},"handles":{"lead":"@L:x"}}' "$a1" "$rdy" "$other1" "$rdy" \
@@ -783,6 +860,15 @@ EOF
   board 1 '[{"id":"a1","state":"claimed","owner":"w1","creator":"lead","title":"take me","assigned_ms":1}]'
   crew_worker w1 lead 'echo took it; echo STATUS: done' "$t/proj" 0 30 1 0 0 0 >/dev/null 2>&1
   ck "ranked first, it claims at once and does the task" "$(lines | grep -c 'DONE a1 took it')" 1
+  echo 1 >"$t/data/workers/w1.stop"
+  scenario
+  board 0 '[]' '{}' '{"lead":"@L:x"}' 3
+  board 1 '[]' '{}' '{"lead":"@L:x"}' 3
+  board 2 '[]' '{}' '{"lead":"@L:x"}' 0
+  crew_worker w1 lead 'true' "$t/proj" 0 30 0 0 0 0 >/dev/null 2>&1
+  ck "a worker missing 3 earlier messages says so once, and again when it has them" \
+    "$(lines | sed 's/host=[^ ]*/host=H/' | tr '\n' ';')" \
+    "w1 -> @lead | READY host=H agent=custom;w1 -> @lead | READY host=H agent=custom missing=3;w1 -> @lead | READY host=H agent=custom missing=0;w1 -> @lead | BYE;"
   echo 1 >"$t/data/workers/w1.stop"
 
   # Default worker names.
@@ -848,6 +934,51 @@ EOF
       "lead":{"state":"","detail":"","state_ts_ms":0,"last_seen_ms":1000,"stop_by":"","stop_ts_ms":0}}}' 121000)
   ck "the roster: busy with its task, stopping, gone; open work with its age; the manager is no worker" \
     "$(grep -cE '^  @w1  busy t1  seen 1m ago  host=a agent=codex$|^  @w2  stopping|^  @w3  gone|^  t2  @ALL  assigned 2m ago by @lead  b$' <<<"$out") $(grep -c '@lead' <<<"$out")" "4 1"
+  ck "and says nothing about sharing when no worker misses messages" "$(grep -c 'share --missing' <<<"$out")" 0
+  out=$(crew_roster '{"tasks":[],"workers":{"w4":{"state":"ready","detail":"host=b agent=claude missing=12","state_ts_ms":1,"last_seen_ms":61000,"stop_by":"","stop_ts_ms":0},
+    "w5":{"state":"ready","detail":"host=b agent=claude missing=0","state_ts_ms":1,"last_seen_ms":61000,"stop_by":"","stop_ts_ms":0}}}' 121000)
+  ck "the roster names a worker missing earlier messages, and the command that gives it them" \
+    "$(grep -cxE '  @w4  idle  seen 1m ago  host=b agent=claude  missing 12 earlier messages|  @w5  idle  seen 1m ago  host=b agent=claude' <<<"$out") $(grep -c 'run agichan share --missing where the manager is' <<<"$out")" "2 1"
+
+  # Sharing earlier messages with the workers of a machine that joined later.
+  local sb='{"tasks":[],"handles":{"lead":"@L:x","w4":"@W4:x","w5":"@W5:x","w6":"@W6:x"},
+    "workers":{"w4":{"state":"ready","detail":"host=b missing=12"},"w5":{"state":"ready","detail":"host=b missing=0"},
+      "w6":{"state":"bye","detail":"host=b missing=7"}},"not_counted":{"no_key":0,"unverified":0}}'
+  mark
+  out=$(crew_share "$sb" --missing 2>&1)
+  ck "share --missing gives the sponsor's keys to the ready workers that say they miss messages, only" \
+    "$(calls | grep -c 'chat forward') $(calls | grep -cx 'sponsor|-k sponsor -u rpc chat forward !r:x @W4:x --limit 1000') $(grep -c '^agichan: @w4: forwarded 3 key' <<<"$out")" "1 1 1"
+  mark
+  out=$(crew_share '{"tasks":[],"handles":{"lead":"@L:x"},"not_counted":{"no_key":0,"unverified":0},
+    "workers":{"w-b-1":{"state":"ready","detail":"host=larp-os agent=custom missing=3","sender":"@WB1:x"}}}' --missing 2>&1)
+  ck "an idle worker from a machine that joined later is found by its entry's sender, not in handles (measured live)" \
+    "$(calls | grep -cx 'sponsor|-k sponsor -u rpc chat forward !r:x @WB1:x --limit 1000') $(grep -c 'no line on the board' <<<"$out")" "1 0"
+  mark
+  out=$(crew_share '{"tasks":[],"handles":{"w7":"@W7:x"},"not_counted":{"no_key":0,"unverified":0},
+    "workers":{"w7":{"state":"","detail":"","stop_by":"lead","stop_ts_ms":5,"sender":""}}}' w7 2>&1)
+  ck "an entry with no sender (a STOP named it, nothing else yet) falls back to the handle's binding" \
+    "$(calls | grep -cx 'sponsor|-k sponsor -u rpc chat forward !r:x @W7:x --limit 1000')" 1
+  mark
+  out=$(crew_share "$sb" @w5 nobody 2>&1)
+  code=$?
+  ck "named handles: the @ is optional; one with no line on the board is refused, the rest still get keys" \
+    "$code $(calls | grep -c 'chat forward !r:x @W5:x') $(grep -c '@nobody has no line on the board' <<<"$out")" "1 1 1"
+  echo fail >"$t/forward-mode"
+  out=$(crew_share "$sb" w4 2>&1)
+  code=$?
+  ck "an upload the relay refuses is reported, not hidden" \
+    "$code $(grep -c 'could not share with @w4: chat: keys/share: M_TOO_LARGE' <<<"$out")" "1 1"
+  echo zero >"$t/forward-mode"
+  out=$(crew_share "$sb" w4 2>&1)
+  code=$?
+  ck "no key forwarded is a failure: this machine holds none of them" "$code $(grep -c 'holds no key to share with @w4' <<<"$out")" "1 1"
+  echo ok >"$t/forward-mode"
+  out=$(crew_share "${sb/\"no_key\":0/\"no_key\":5}" w4 2>&1)
+  code=$?
+  ck "a sponsor that cannot read some of them itself says so" "$code $(grep -c 'no key for 5 recent message(s) either' <<<"$out")" "0 1"
+  mark
+  out=$(crew_share '{"tasks":[],"handles":{},"workers":{},"not_counted":{"no_key":0}}' --missing 2>&1)
+  ck "nobody missing messages: nothing is sent" "$(calls | grep -c 'chat forward') $(grep -c 'no worker says' <<<"$out")" "0 1"
 
   echo "crew --selftest: $pass/$((pass + fail)) PASS (scratch: $t)"
   [ "$fail" -eq 0 ]

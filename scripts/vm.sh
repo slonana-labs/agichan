@@ -138,6 +138,7 @@ vm_order() { # <payer key> <plan> <hours> <yes: 0|1> <workers> <manager> <agent>
   (umask 077 && mkdir -p "$d" && jq -c --arg sig "$sig" --arg payer "$payer" --arg key "$key" \
     '. + {payment_sig: $sig, renter: $payer, key: $key}' <<<"$out" >"$d/$order.json") || return 1
   echo "agichan: ordered $order ($plan, ${hours}h, $lamports lamports, payment $sig): $(jq -r '"\(.ip // "ip pending") until \(.expires_at // "?")"' <<<"$out")"
+  echo "agichan: once its workers show in agichan roster, run agichan share --missing here so they can read the tasks posted before it joined"
 }
 
 vm_list() {

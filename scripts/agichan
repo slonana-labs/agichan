@@ -20,6 +20,9 @@
 #   agichan worker --as <handle> --manager <handle> [--agent A] [--dir D] [--git]
 #                  [--push] [--once] [--max N] [--poll S] [--timeout S] [--agent-flags F]
 #   agichan roster                        workers, what each holds, open work
+#   agichan share --missing | <handle>... give workers of a machine that joined
+#                                         later the earlier messages (run it
+#                                         where the manager is)
 # Temporary cloud machines (scripts/vm.sh; each carries a one-time join code):
 #   agichan vm script --manager <handle> [--workers N] [--agent claude|codex|opencode]
 #                     --repo URL [--hours H] [--push] [--env NAME]...
@@ -65,6 +68,8 @@ case " $* " in
   *" keygen new "*) while [ $# -gt 0 ]; do [ "$1" = --outfile ] && echo '[1]' >"$2"; shift; done ;;
   *" address "*) echo "W_$(basename "${3:-x}" .json)" ;;
   *" join "*) [ "$(cat "$d/join-fails" 2>/dev/null)" = 1 ] && exit 1 ;;
+  *" chat forward "*) n=$(cat "$d/forward-fails" 2>/dev/null || echo 0)
+    [ "${n:-0}" -gt 0 ] && { echo $((n - 1)) >"$d/forward-fails"; exit 1; } ;;
   *" chat read "*) cat "$d/read.txt" ;;
   *" chat tasks "*) cat "$d/tasks.txt" ;;
 esac
@@ -95,6 +100,17 @@ EOF
   run identity other >/dev/null 2>&1
   ck "a failed join fails the identity" "$?" 1
   echo 0 >"$tmp/join-fails"
+  export CREW_RETRY_S=0
+  : >"$tmp/calls.log"
+  echo 1 >"$tmp/forward-fails"
+  out=$(run identity me 2>&1)
+  ck "a forward that fails once is tried again, and then nothing is said" \
+    "$(grep -c 'chat forward' "$tmp/calls.log") $(grep -c 'cannot read messages' <<<"$out")" "2 0"
+  : >"$tmp/calls.log"
+  echo 2 >"$tmp/forward-fails"
+  out=$(run identity me 2>&1)
+  ck "failing twice, the identity still stands and the warning names agichan share" \
+    "$? $(grep -c 'chat forward' "$tmp/calls.log") $(grep -c 'before it joined; run agichan share me$' <<<"$out")" "0 2 1"
 
   : >"$tmp/calls.log"
   printf 'me -> @peer | on it' | run chat --as me send '!r:x' --stdin >/dev/null
@@ -180,8 +196,13 @@ do_identity() { # <handle>
   printf '%s -> @ALL | MOVE %s' "$h" "$wallet" |
     "$bin" -k "$sponsor" -u "$rpc" chat send "$room" --stdin "${strict[@]}" >/dev/null 2>&1 ||
     echo "agichan: the board still binds @$h to its old wallet until a MOVE line lands" >&2
-  "$bin" -k "$sponsor" -u "$rpc" chat forward "$room" "$wallet" --limit 1000 "${strict[@]}" >/dev/null 2>&1 ||
-    echo "agichan: @$h cannot read messages from before it joined; run agichan identity $h again" >&2
+  # Keys for earlier messages. The sponsor's chat lock may be busy while
+  # workers are set up in a batch, hence one retry.
+  if ! "$bin" -k "$sponsor" -u "$rpc" chat forward "$room" "$wallet" --limit 1000 "${strict[@]}" >/dev/null 2>&1; then
+    sleep "${CREW_RETRY_S:-6}"
+    "$bin" -k "$sponsor" -u "$rpc" chat forward "$room" "$wallet" --limit 1000 "${strict[@]}" >/dev/null 2>&1 ||
+      echo "agichan: @$h cannot read messages from before it joined; run agichan share $h" >&2
+  fi
   echo "@$h posts as wallet $wallet in $room"
 }
 
@@ -355,6 +376,14 @@ roster)
   crew_has_board_json "$bin" || die "roster needs a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)"
   board=$(crew_board "$sponsor") || die "could not read the board of $room"
   crew_roster "$board" "$(date +%s%3N)"
+  ;;
+share)
+  [ $# -gt 0 ] || die "usage: agichan share --missing | <handle>..."
+  setup
+  command -v jq >/dev/null 2>&1 || die "share needs jq"
+  crew_has_board_json "$bin" || die "share needs a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)"
+  board=$(crew_board "$sponsor") && [ -n "$board" ] || die "could not read the board of $room"
+  crew_share "$board" "$@"
   ;;
 digest)
   setup
