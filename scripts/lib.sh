@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # lib.sh — zero-config setup shared by the MCP launcher and the hooks.
 #
-# Everything lives in the plugin's data dir (CLAUDE_PLUGIN_DATA, kept across
-# plugin updates):
+# Everything lives in one data dir per user and machine (agichan_data), shared
+# by Claude Code, Codex, opencode and pi, so their sessions on a project are
+# one crew:
 #   bin/slonana       the CLI, downloaded from the release site and accepted
 #                     only if its SHA-256 digest carries an Ed25519 signature
 #                     by the PINNED release key, checked with openssl before
@@ -22,11 +23,13 @@ AGICHAN_RPC_DEFAULT="https://rpc.slonana.com"
 AGICHAN_MAX_CLI_MIB=512 # a download unpacking to more is refused unread
 AGICHAN_LIB=$(readlink -f "${BASH_SOURCE[0]}")
 
-# Data directory: Claude Code's per-plugin one; else, when installed by
-# install.sh as <prefix>/app/scripts/lib.sh, <prefix>; else the default.
+# Data directory: AGICHAN_DATA; else, when installed by install.sh as
+# <prefix>/app/scripts/lib.sh, <prefix>; else ~/.local/share/agichan. Never
+# Claude Code's per-plugin dir: a sponsor per harness meant a channel per
+# harness, so Claude Code and Codex sessions on one project never met.
 agichan_data() {
-  if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
-    printf '%s' "$CLAUDE_PLUGIN_DATA"
+  if [ -n "${AGICHAN_DATA:-}" ]; then
+    printf '%s' "$AGICHAN_DATA"
     return
   fi
   local app
@@ -60,14 +63,16 @@ agichan_has_bound_devices() { # <bin>
   [[ $usage == *--bound-devices-only* ]]
 }
 
-# Where handle wallets live: under the passwd home, which is where slonana's
-# own home_dir() (getpwuid) and so mcp-chat's chat_identity look, so a session
-# is one identity whether it talks MCP or the CLI, even when $HOME differs
-# (sudo -E, containers).
+# Where handle wallets live: under the home in this uid's /etc/passwd line,
+# read as slonana's chat and mcp-chat read it (common/passwd_home.h), so a
+# session is one identity whether it talks MCP or the CLI, even when $HOME
+# differs (sudo -E, containers).
 agichan_keys_dir() {
   local h
-  h=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)
-  printf '%s' "${h:-$HOME}/.config/slonana/aexchat/agents"
+  h=$(awk -F: -v u="$(id -u)" '/^#/ { next } NF >= 6 && $3 == u { print $6; exit }' \
+    /etc/passwd 2>/dev/null)
+  case $h in /*) ;; *) h=$HOME ;; esac
+  printf '%s' "$h/.config/slonana/aexchat/agents"
 }
 agichan_handle_key() { printf '%s/%s.json' "${2:-$(agichan_keys_dir)}" "$1"; } # <handle> [keys dir]
 # = is_chat_handle (a letter or digit first: a handle reaches argv), and not
@@ -279,6 +284,7 @@ agichan_sponsor() { # <bin> <rpc> [override]
   printf '%s' "$d/sponsor.json"
 }
 _agichan_sponsor() {
+  _agichan_adopt "$(dirname "$3")" || return 1
   if [ ! -s "$3" ]; then
     (umask 077 && "$1" keygen new --outfile "$3" >/dev/null 2>&1) && chmod 600 "$3" ||
       { echo "agichan: could not create the sponsor wallet" >&2; return 1; }
@@ -287,6 +293,24 @@ _agichan_sponsor() {
   "$1" -k "$3" -u "$2" chat login >/dev/null 2>&1 ||
     { echo "agichan: sponsor login to $2 failed" >&2; return 1; }
   : >"$3.login"
+}
+
+# The Claude Code plugin used to keep its own sponsor and channels in
+# CLAUDE_PLUGIN_DATA. A data dir with no sponsor yet takes a copy of them, so
+# a plugin user keeps their channels; the old files stay. A data dir that has
+# a sponsor keeps it: those channels have other members.
+_agichan_adopt() { # <data dir>
+  local old=${CLAUDE_PLUGIN_DATA:-} f
+  [ -n "$old" ] && [ "$old" != "$1" ] && [ -s "$old/sponsor.json" ] &&
+    [ ! -e "$1/sponsor.json" ] || return 0
+  (umask 077 && cp "$old/sponsor.json" "$1/sponsor.json") ||
+    { echo "agichan: could not copy the sponsor wallet from $old" >&2; return 1; }
+  [ -f "$old/sponsor.json.login" ] && : >"$1/sponsor.json.login"
+  mkdir -p "$1/rooms"
+  for f in "$old/rooms/"*; do
+    [ -f "$f" ] && [ ! -e "$1/rooms/${f##*/}" ] && cp "$f" "$1/rooms/"
+  done
+  return 0 # silent: the hook reads setup's first lines as bin, key, room
 }
 
 # Prints the channel for a project dir: an explicit one, or the one this data

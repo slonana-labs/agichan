@@ -55,7 +55,7 @@ EOF
   mkdir -p "$tmp/home" "$tmp/data"
   echo '[1]' >"$tmp/data/sponsor.json"
   : >"$tmp/data/sponsor.json.login"
-  run() { HOME="$tmp/home" CLAUDE_PLUGIN_DATA="$tmp/data" \
+  run() { HOME="$tmp/home" AGICHAN_DATA="$tmp/data" \
     "$0" --bin "$tmp/bin" --room '!r:x' --rpc rpc --keys "$tmp/keys" "$@"; }
   calls() { cut -d'|' -f1,2 "$tmp/calls.log"; }
 

@@ -135,14 +135,14 @@ ck "an openssl without Ed25519 support blames openssl, not the release" \
   "absent 1 0"
 
 # Through agichan_bin, against a fake release site.
-export CLAUDE_PLUGIN_DATA="$tmp/data"
+export AGICHAN_DATA="$tmp/data"
 AGICHAN_RELEASE_BASE="file://$tmp/site"
 AGICHAN_RELEASE_KEY=$k1
 agichan_locked true
 ck "the data dir is created private" "$(stat -c %a "$tmp/data")" 700
 make_release "$tmp/site" v0.0.1-slon "$tmp/k1.pem" >/dev/null
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
-  out=$(AGICHAN_RELEASE_BASE="file://$tmp/nowhere" CLAUDE_PLUGIN_DATA="$tmp/data0" \
+  out=$(AGICHAN_RELEASE_BASE="file://$tmp/nowhere" AGICHAN_DATA="$tmp/data0" \
     agichan_bin "" 2>"$tmp/err")
   rc=$?
   ck "a first use that cannot download fails, says why, and names no binary" \
@@ -185,8 +185,8 @@ else
   echo "  skip update checks: agichan_bin installs only on Linux x86-64"
 fi
 
-# Handle wallets live where mcp-chat's chat_identity looks: under the passwd
-# home (getpwuid), whatever $HOME says.
+# Handle wallets live where mcp-chat's chat_identity looks: under the home in
+# the uid's /etc/passwd line, whatever $HOME says.
 ck "handle wallets live under the passwd home, whatever \$HOME says" \
   "$(HOME=/nonexistent bash -c '. "$1"; agichan_keys_dir' _ "$(dirname "$0")/lib.sh")" \
   "$(getent passwd "$(id -u)" | cut -d: -f6)/.config/slonana/aexchat/agents"
@@ -199,6 +199,37 @@ chmod +x "$tmp/kg/slonana"
 : >"$tmp/data/sponsor2.json.login"
 _agichan_sponsor "$tmp/kg/slonana" rpc "$tmp/data/sponsor2.json"
 ck "the sponsor key ends up readable by its owner only" "$(stat -c %a "$tmp/data/sponsor2.json")" 600
+
+# One data dir per machine, whatever the harness: a sponsor per harness was a
+# channel per harness.
+data_of() { # <lib.sh> <HOME> <CLAUDE_PLUGIN_DATA>
+  HOME="$2" CLAUDE_PLUGIN_DATA="$3" AGICHAN_DATA='' bash -c '. "$1"; agichan_data' _ "$1"
+}
+ck "Claude Code's plugin uses the machine's data dir, not its per-plugin one" \
+  "$(data_of "$(dirname "$0")/lib.sh" "$tmp/h" "$tmp/plugin-data")" "$tmp/h/.local/share/agichan"
+mkdir -p "$tmp/pfx/app/scripts" && cp "$(dirname "$0")/lib.sh" "$tmp/pfx/app/scripts/" &&
+  : >"$tmp/pfx/app/scripts/mcp.sh"
+ck "install.sh's --prefix layout keeps its prefix as the data dir" \
+  "$(data_of "$tmp/pfx/app/scripts/lib.sh" "$tmp/h" "$tmp/plugin-data")" "$tmp/pfx"
+
+# A sponsor and channels only the plugin had are copied in, once; the old
+# files stay, and a data dir with its own sponsor keeps it.
+mkdir -p "$tmp/legacy/rooms" "$tmp/fresh/rooms" "$tmp/own"
+printf '[7]' >"$tmp/legacy/sponsor.json" && chmod 644 "$tmp/legacy/sponsor.json"
+: >"$tmp/legacy/sponsor.json.login"
+printf '!old:x\n' >"$tmp/legacy/rooms/abc"
+printf '!old2:x\n' >"$tmp/legacy/rooms/keep"
+printf '!mine:x\n' >"$tmp/fresh/rooms/keep"
+CLAUDE_PLUGIN_DATA="$tmp/legacy" _agichan_sponsor "$tmp/kg/slonana" rpc "$tmp/fresh/sponsor.json"
+ck "a plugin-only sponsor is adopted, private, with its channels" \
+  "$(cat "$tmp/fresh/sponsor.json") $(stat -c %a "$tmp/fresh/sponsor.json") $(cat "$tmp/fresh/rooms/abc")" \
+  "[7] 600 !old:x"
+ck "a channel the data dir already maps is not replaced" "$(cat "$tmp/fresh/rooms/keep")" "!mine:x"
+ck "the plugin's own files stay" "$(cat "$tmp/legacy/sponsor.json") $(ls "$tmp/legacy/rooms" | wc -l)" "[7] 2"
+printf '[8]' >"$tmp/own/sponsor.json" && : >"$tmp/own/sponsor.json.login"
+CLAUDE_PLUGIN_DATA="$tmp/legacy" _agichan_sponsor "$tmp/kg/slonana" rpc "$tmp/own/sponsor.json"
+ck "a data dir with its own sponsor keeps it and adopts no channels" \
+  "$(cat "$tmp/own/sponsor.json") $(ls -A "$tmp/own" | grep -c rooms)" "[8] 0"
 
 echo "agichan lib --selftest: $pass/$((pass + fail)) PASS (scratch: $tmp)"
 [ "$fail" -eq 0 ]

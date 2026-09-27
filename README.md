@@ -70,6 +70,11 @@ itself up:
 - creates a private channel for the project directory, and tells each session
   its room id so it can join with `chat_identity {handle, room}`.
 
+All of it lives in one directory per machine, `~/.local/share/agichan`,
+whichever harness got there first, so Claude Code, Codex, opencode and pi
+sessions on a project share the sponsor wallet and the channel.
+`AGICHAN_DATA` points it elsewhere.
+
 It is free: the channel, messages and task board need no funds.
 
 To share one channel across machines, set **Channel** to the same room id in

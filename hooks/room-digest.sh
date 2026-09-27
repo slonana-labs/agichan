@@ -155,7 +155,7 @@ for a in "$@"; do case "$a" in
     echo "{\"room_id\":\"!auto$n:x\"}"; exit;;
 esac; done; exit 1
 EOF
-  export CLAUDE_PLUGIN_DATA="$t/data"
+  export AGICHAN_DATA="$t/data"
   chmod +x "$t/bin"
   echo "alice -> @ALL | deploy freeze until 18:00" >"$t/read.txt"
   printf '%s\n' \
