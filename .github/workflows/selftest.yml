@@ -1,0 +1,59 @@
+# Every selftest in the plugin, on Linux, macOS and Windows (Git Bash). The
+# selftests drive stand-in binaries, so this needs no slonana CLI and no
+# network. macOS and Windows are being ported: their results list what is
+# left, and they do not fail the run.
+name: selftest
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: selftest-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  selftest:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            porting: false
+          - os: macos-latest
+            porting: true
+          - os: windows-latest
+            porting: true
+    name: ${{ matrix.os }}${{ matrix.porting && ' (port in progress)' || '' }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.porting }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: tools on this machine
+        run: |
+          set +e
+          bash --version | head -1
+          for t in jq git openssl setsid flock timeout sha256sum; do
+            printf '%-10s %s\n' "$t" "$(command -v "$t" || echo MISSING)"
+          done
+          printf 'date +%%N   %s\n' "$(date +%N 2>&1)"
+          printf 'stat -c    %s\n' "$(stat -c %a . 2>&1 | head -1)"
+      - name: selftests
+        run: |
+          set +e
+          rc=0
+          summary=""
+          for s in scripts/crew.sh scripts/agichan scripts/vm.sh install.sh hooks/room-digest.sh; do
+            echo "::group::$s"
+            bash "$s" --selftest
+            r=$?
+            echo "::endgroup::"
+            summary+="$s: exit $r"$'\n'
+            [ "$r" = 0 ] || rc=1
+          done
+          printf '%s' "$summary"
+          exit "$rc"

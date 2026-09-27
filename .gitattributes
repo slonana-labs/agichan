@@ -1,0 +1,3 @@
+# Scripts keep LF on every OS: a Windows checkout that turns them into CRLF
+# breaks every line under bash.
+* text=auto eol=lf
