@@ -13,7 +13,7 @@
 #   agichan join-code [--ttl 24h]         a one-time code another machine joins with
 #   agichan join <code> [--dir D] [--force]  join this machine to that channel
 #   agichan workers --count N --manager <handle> [--agent claude|codex|opencode|CMD]
-#                   [--prefix P] [--repo URL] [--push] [--timeout S]
+#                   [--prefix P] [--repo URL] [--push] [--timeout S] [--poll S]
 #                                         start N workers, each in its own clone
 #   agichan workers --list | --stop [handle...]
 #   agichan worker --as <handle> --manager <handle> [--agent A] [--dir D] [--git]
@@ -265,7 +265,7 @@ worker)
   crew_worker "$as" "$mgr" "$agent" "$wdir" "$poll" "$tmo" "$once" "$usegit" "$push" "$max"
   ;;
 workers)
-  count="" mgr="" agent=claude prefix="" src=$PWD push=0 tmo=3600 action=start
+  count="" mgr="" agent=claude prefix="" src=$PWD push=0 tmo=3600 poll=20 action=start
   while [ $# -gt 0 ]; do
     case $1 in
     --list) action=list; shift ;;
@@ -277,6 +277,7 @@ workers)
     --repo) src=${2:-}; shift 2 ;;
     --push) push=1; shift ;;
     --timeout) tmo=$(seconds_of "${2:-}") || die "--timeout takes 30m, 2h or seconds"; shift 2 ;;
+    --poll) poll=$(seconds_of "${2:-}") || die "--poll takes seconds"; shift 2 ;;
     *) die "unknown workers option $1 (agichan help)" ;;
     esac
   done
@@ -288,10 +289,11 @@ workers)
     agichan_valid_handle "$mgr" || die "workers needs --manager <handle>"
     command -v jq >/dev/null 2>&1 || die "workers need jq"
     command -v git >/dev/null 2>&1 || die "workers need git"
-    [ -n "$prefix" ] || prefix="w-$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9_-' '-' | cut -c1-40)"
     setup
     crew_has_board_json "$bin" || die "workers need a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)"
-    crew_workers_start "$count" "$mgr" "$agent" "$prefix" "$src" "$push" "$tmo"
+    [ -n "$prefix" ] ||
+      prefix=$(crew_default_prefix "$(hostname -s 2>/dev/null)" "$("$bin" address --keypair "$sponsor" 2>/dev/null)")
+    crew_workers_start "$count" "$mgr" "$agent" "$prefix" "$src" "$push" "$tmo" "$poll"
     ;;
   esac
   ;;
