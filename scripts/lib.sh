@@ -99,7 +99,15 @@ agichan_bin() { # [override]
   local d
   if [ -n "${1:-}" ]; then printf '%s' "$1"; return 0; fi
   d=$(agichan_data)
-  if [ -x "$d/bin/slonana" ]; then printf '%s' "$d/bin/slonana"; return 0; fi
+  if [ -x "$d/bin/slonana" ]; then
+    # At most daily: a newer published release replaces this one, through the
+    # same signature check. Any failure keeps the installed, verified copy.
+    if [ -z "$(find "$d/bin/slonana.checked" -mmin -1440 2>/dev/null)" ]; then
+      agichan_locked _agichan_update "$d/bin/slonana" 2>/dev/null || true
+    fi
+    printf '%s' "$d/bin/slonana"
+    return 0
+  fi
   case "$(uname -s)/$(uname -m)" in
   Linux/x86_64) ;;
   *) echo "agichan: no prebuilt CLI for $(uname -s)/$(uname -m) yet (Linux x86-64 only)" >&2; return 1 ;;
@@ -109,6 +117,20 @@ agichan_bin() { # [override]
 }
 _agichan_install() {
   [ -x "$1" ] || agichan_fetch_release "$AGICHAN_RELEASE_BASE" "$AGICHAN_RELEASE_KEY" "$1"
+  : >"$1.checked"
+}
+
+agichan_version_of() { sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$1" 2>/dev/null; }
+
+# Replaces <dest> when the published manifest names another version. The
+# check is recorded even when it fails, so an outage costs one try a day.
+_agichan_update() { # <dest>
+  local now
+  : >"$1.checked"
+  now=$(curl -fsSL --max-time 10 "$AGICHAN_RELEASE_BASE/slonana.manifest.json" |
+    sed -n 's/.*"version":"\([^"]*\)".*/\1/p') || return 1
+  [ -n "$now" ] && [ "$now" != "$(agichan_version_of "$1.manifest.json")" ] || return 0
+  agichan_fetch_release "$AGICHAN_RELEASE_BASE" "$AGICHAN_RELEASE_KEY" "$1"
 }
 
 # Prints the sponsor keypair path: an explicit one, or one created and logged

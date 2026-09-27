@@ -37,8 +37,8 @@ make_release() { # <dir> <payload> <key.pem> [sign-this-digest-instead]
   agichan_hex_bin "${4:-$digest}" >"$dir/d.bin"
   openssl pkeyutl -sign -inkey "$3" -rawin -in "$dir/d.bin" -out "$dir/s.bin"
   sig=$(od -An -tx1 -v "$dir/s.bin" | tr -d ' \n')
-  printf '{"version":"v0.0.1-test","sha256":"%s","signature":"%s","pubkey":"x"}' \
-    "$digest" "$(hex_b58 "$sig")" >"$dir/slonana.manifest.json"
+  printf '{"version":"%s","sha256":"%s","signature":"%s","pubkey":"x"}' \
+    "${MR_VERSION:-v0.0.1-test}" "$digest" "$(hex_b58 "$sig")" >"$dir/slonana.manifest.json"
   pk=$(openssl pkey -in "$3" -pubout -outform DER | od -An -tx1 -v | tr -d ' \n')
   hex_b58 "${pk:24}"
 }
@@ -76,6 +76,32 @@ echo genuine" "$tmp/k1.pem" \
 agichan_fetch_release "file://$tmp/r4" "$k1" "$tmp/out/d" 2>/dev/null
 ck "a signature over a different digest is refused" \
   "$([ -e "$tmp/out/d" ] && echo installed || echo absent)" absent
+
+# Daily update through agichan_bin, against a fake release site.
+export CLAUDE_PLUGIN_DATA="$tmp/data"
+AGICHAN_RELEASE_BASE="file://$tmp/site"
+AGICHAN_RELEASE_KEY=$k1
+MR_VERSION=v1 make_release "$tmp/site" "#!/bin/sh
+echo v1" "$tmp/k1.pem" >/dev/null
+if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ]; then
+  b=$(agichan_bin "")
+  ck "first use installs the published release" "$("$b")" v1
+  MR_VERSION=v2 make_release "$tmp/site" "#!/bin/sh
+echo v2" "$tmp/k1.pem" >/dev/null
+  ck "within a day the release is not re-checked" "$("$(agichan_bin "")")" v1
+  touch -d '2 days ago' "$tmp/data/bin/slonana.checked"
+  ck "after a day a newer signed release replaces it" "$("$(agichan_bin "")")" v2
+  MR_VERSION=v3 make_release "$tmp/site" "#!/bin/sh
+echo evil" "$tmp/k2.pem" >/dev/null
+  touch -d '2 days ago' "$tmp/data/bin/slonana.checked"
+  ck "a newer release signed by another key is refused; the old one stays" \
+    "$("$(agichan_bin "")")" v2
+  AGICHAN_RELEASE_BASE="file://$tmp/nowhere"
+  touch -d '2 days ago' "$tmp/data/bin/slonana.checked"
+  ck "an unreachable release site keeps the installed copy" "$("$(agichan_bin "")")" v2
+else
+  echo "  skip update checks: agichan_bin installs only on Linux x86-64"
+fi
 
 echo "agichan lib --selftest: $pass/$((pass + fail)) PASS"
 [ "$fail" -eq 0 ]
