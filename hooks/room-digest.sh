@@ -69,7 +69,7 @@ frame() { # <digest> <room>
 
 run() { # <event> <bin> <keypair> <rpc> <room>
   local event=$1 bin key rpc=${4:-$AGICHAN_RPC_DEFAULT} room input sid now d sum
-  local cwd why
+  local cwd why ok_after_join=0
   input=$(cat 2>/dev/null || true)
   cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   cwd=${cwd:-$PWD}
@@ -92,9 +92,23 @@ run() { # <event> <bin> <keypair> <rpc> <room>
   fi
   echo "$now" >"$CACHE_DIR/$sid.ts" 2>/dev/null || true
   if ! d=$(digest "$bin" "$key" "$rpc" "$room"); then
-    [ "$event" = start ] &&
-      echo "[agichan: channel $room at $rpc could not be read: ${d:-no answer}]"
-    return 0
+    # A channel set by hand (shared across machines) refuses a wallet that is
+    # not in it. If a member already invited it, joining is all that is left.
+    if [[ $d == *M_FORBIDDEN* ]] &&
+      timeout 20 "$bin" -k "$key" -u "$rpc" chat join "$room" >/dev/null 2>&1; then
+      d=$(digest "$bin" "$key" "$rpc" "$room") && ok_after_join=1
+    fi
+    if [ "${ok_after_join:-0}" != 1 ]; then
+      if [ "$event" = start ]; then
+        echo "[agichan: channel $room at $rpc could not be read: ${d:-no answer}]"
+        if [[ $d == *M_FORBIDDEN* ]]; then
+          local me
+          me=$("$bin" address --keypair "$key" 2>/dev/null)
+          echo "[agichan: this machine's wallet ${me:-?} is not in that channel. A member runs chat_invite {room: \"$room\", wallet: \"${me:-?}\"}; the next session here joins by itself.]"
+        fi
+      fi
+      return 0
+    fi
   fi
   sum=$(printf '%s' "$d" | sha256sum | cut -d' ' -f1)
   if [ "$event" = prompt ] && [ "$(cat "$CACHE_DIR/$sid.sum" 2>/dev/null)" = "$sum" ]; then
@@ -116,6 +130,11 @@ selftest() {
   cat >"$t/bin" <<'EOF'
 #!/usr/bin/env bash
 d=$(dirname "$0")
+if [[ " $* " == *" chat read "* || " $* " == *" chat tasks "* ]] &&
+  [ "$(cat "$d/forbidden" 2>/dev/null)" = 1 ]; then
+  echo "chat: keys/pending: M_FORBIDDEN: You must join this room to fetch its key shares" >&2
+  exit 1
+fi
 if [[ " $* " == *" chan read "* ]]; then
   for a in "$@"; do [ -f "$d/chan-$a.txt" ] && { cat "$d/chan-$a.txt"; exit 0; }; done
   exit 1
@@ -126,6 +145,9 @@ for a in "$@"; do case "$a" in
   keygen) echo keygen >>"$d/calls.log"; while [ $# -gt 0 ]; do
     [ "$1" = --outfile ] && echo '[1]' >"$2"; shift; done; exit;;
   login) echo login >>"$d/calls.log"; exit;;
+  join) echo join >>"$d/calls.log"
+    [ -f "$d/invited" ] && { echo 0 >"$d/forbidden"; exit 0; }; exit 1;;
+  address) echo WALLETB; exit;;
   create) echo create >>"$d/calls.log"; n=$(grep -c create "$d/calls.log")
     echo "{\"room_id\":\"!auto$n:x\"}"; exit;;
 esac; done; exit 1
@@ -182,6 +204,19 @@ EOF
     "$(grep -c 'bad name' <<<"$out")" 0
   ck "an unreadable board says so and the rest of the digest stays" \
     "$(grep -cE 'PUBLIC board "gone"|could not read this board|deploy freeze' <<<"$out")" 3
+
+  # A channel shared across machines: this machine's wallet is not in it.
+  echo 1 >"$t/forbidden"
+  out=$(printf '%s' '{"session_id":"m-1"}' | run start "$t/bin" key rpc '!s:x')
+  ck "not a member: start names this machine's wallet and the invite call" \
+    "$(grep -cF 'chat_invite {room: "!s:x", wallet: "WALLETB"}' <<<"$out")" 1
+  out=$(printf '%s' '{"session_id":"m-2"}' | run prompt "$t/bin" key rpc '!s:x')
+  ck "not a member: a prompt stays silent" "$out" ""
+  : >"$t/invited"
+  out=$(printf '%s' '{"session_id":"m-3"}' | run start "$t/bin" key rpc '!s:x')
+  ck "once invited, the next session joins by itself and reads the channel" \
+    "$(grep -c 'deploy freeze' <<<"$out") $(grep -c '^join' "$t/calls.log")" \
+    "1 3"
 
   local p1='{"session_id":"a-1","cwd":"/work/api"}'
   local p2='{"session_id":"a-2","cwd":"/work/web"}'
