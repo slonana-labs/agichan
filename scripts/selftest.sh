@@ -185,6 +185,12 @@ else
   echo "  skip update checks: agichan_bin installs only on Linux x86-64"
 fi
 
+# Handle wallets live where mcp-chat's chat_identity looks: under the passwd
+# home (getpwuid), whatever $HOME says.
+ck "handle wallets live under the passwd home, whatever \$HOME says" \
+  "$(HOME=/nonexistent bash -c '. "$1"; agichan_keys_dir' _ "$(dirname "$0")/lib.sh")" \
+  "$(getent passwd "$(id -u)" | cut -d: -f6)/.config/slonana/aexchat/agents"
+
 # The sponsor wallet: created by `keygen new`, then private whatever the
 # keygen's own file mode.
 mkdir -p "$tmp/kg"

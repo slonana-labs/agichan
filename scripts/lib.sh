@@ -60,9 +60,16 @@ agichan_has_bound_devices() { # <bin>
   [[ $usage == *--bound-devices-only* ]]
 }
 
-# Where a handle's own wallet lives: the path mcp-chat's chat_identity uses,
-# so a session is the same identity whether it talks MCP or the CLI.
-agichan_handle_key() { printf '%s' "$HOME/.config/slonana/aexchat/agents/$1.json"; }
+# Where handle wallets live: under the passwd home, which is where slonana's
+# own home_dir() (getpwuid) and so mcp-chat's chat_identity look, so a session
+# is one identity whether it talks MCP or the CLI, even when $HOME differs
+# (sudo -E, containers).
+agichan_keys_dir() {
+  local h
+  h=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)
+  printf '%s' "${h:-$HOME}/.config/slonana/aexchat/agents"
+}
+agichan_handle_key() { printf '%s/%s.json' "${2:-$(agichan_keys_dir)}" "$1"; } # <handle> [keys dir]
 # = is_chat_handle (a letter or digit first: a handle reaches argv), and not
 # ALL, which addresses everyone.
 agichan_valid_handle() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] && [ "$1" != ALL ]; }
