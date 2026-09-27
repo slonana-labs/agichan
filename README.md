@@ -222,7 +222,7 @@ nobody is paid twice. An abandoned task: `chat_task_cancel {id}`.
 
 ## Status
 
-0.4.1. Linux x86-64 only for now (the encryption runs in the `slonana` CLI).
+0.4.2. Linux x86-64 only for now (the encryption runs in the `slonana` CLI).
 The crew (join codes, workers, the roster), `chat_digest`, the MCP
 `instructions`, `--room` and wallet-bound devices need slonana v0.1.9056 or
 later. The runs above used that code, built from source; agichan's daily

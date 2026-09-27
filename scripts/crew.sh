@@ -411,9 +411,11 @@ crew_workers_start() { # <count> <mgr> <agent> <prefix> <src> <push: 0|1> <timeo
   # Wallets and channel membership, in batches of <parallel>. Each worker's
   # own login and join overlap; the sponsor's invite, MOVE and forward take
   # turns on its state file's lock, which a chat command waits on for 60 s,
-  # hence the cap of 8. A failed setup does not hold back the others.
+  # hence the cap of 8. A failed setup does not hold back the others. Its
+  # warnings go to the terminal as well as the log: a forward that timed out
+  # leaves a worker that cannot read tasks posted before it joined.
   for h in "${todo[@]}"; do
-    "$AGICHAN_CLI" "${o[@]}" identity "$h" >>"$wd/$h.log" 2>&1 &
+    "$AGICHAN_CLI" "${o[@]}" identity "$h" >>"$wd/$h.log" 2>"$wd/$h.err" &
     hs+=("$h")
     ps+=("$!")
     [ "${#ps[@]}" -lt "$par" ] && continue
@@ -422,6 +424,10 @@ crew_workers_start() { # <count> <mgr> <agent> <prefix> <src> <push: 0|1> <timeo
   done
   for i in "${!ps[@]}"; do wait "${ps[$i]}" || bad+=("${hs[$i]}"); done
   for h in "${todo[@]}"; do
+    if [ -s "$wd/$h.err" ]; then
+      cat "$wd/$h.err" >&2
+      cat "$wd/$h.err" >>"$wd/$h.log"
+    fi
     if [[ " ${bad[*]} " == *" $h "* ]]; then
       echo "agichan: could not set up @$h (see $wd/$h.log)" >&2
       failed=1
@@ -795,13 +801,15 @@ EOF
   # handles in its fail file fail.
   git init -q "$t/src" && git -C "$t/src" -c user.name=t -c user.email=t@x commit -q --allow-empty -m base
   mkcli() {
-    mkdir -p "$t/$1" && : >"$t/$1/fail" && : >>"$t/$1/log"
+    mkdir -p "$t/$1" && : >"$t/$1/fail" && : >"$t/$1/warn" && : >>"$t/$1/log"
     cat >"$t/$1/cli" <<'EOF'
 #!/usr/bin/env bash
 d=$(dirname "$0")
 while [ $# -gt 0 ]; do case $1 in --room | --rpc | --bin | --keys) shift 2 ;; *) break ;; esac; done
 case $1 in
-identity) echo "start $2" >>"$d/log"; sleep 0.4; echo "end $2" >>"$d/log"; ! grep -qx "$2" "$d/fail" ;;
+identity) echo "start $2" >>"$d/log"; sleep 0.4; echo "end $2" >>"$d/log"
+  if grep -qx "$2" "$d/warn"; then echo "agichan: @$2 cannot read messages from before it joined" >&2; fi
+  ! grep -qx "$2" "$d/fail" ;;
 worker) echo "worker $3" >>"$d/log" ;;
 esac
 EOF
@@ -819,10 +827,12 @@ EOF
       "workers=$(grep '^worker' "$t/$1/log" | cut -d' ' -f2 | sort | tr '\n' ,)" \
       "early=$(awk '/^end/ { e[$2] = 1 } /^worker/ && !($2 in e) { n++ } END { print n + 0 }' "$t/$1/log")"
   }
-  mkcli sa && printf 'sw-3\nsw-5\n' >"$t/sa/fail"
+  mkcli sa && printf 'sw-3\nsw-5\n' >"$t/sa/fail" && echo sw-2 >"$t/sa/warn"
   ck "workers are set up <parallel> at a time; failed setups, in a full batch and the last, are not started and the rest are" \
     "$(launch sa 5 sw 2)" "rc=1 peak=2 workers=sw-1,sw-2,sw-4, early=0"
   ck "and each failed one is named" "$(grep -c 'could not set up @sw-[35] ' "$t/sa/out")" 2
+  ck "a setup's warning reaches the terminal as well as the log, and that worker still starts" \
+    "$(grep -cx 'agichan: @sw-2 cannot read messages from before it joined' "$t/sa/out") $(grep -c 'cannot read messages' "$AGICHAN_DATA/workers/sw-2.log")" "1 1"
   mkcli sb
   ck "--parallel 1 sets them up one at a time" "$(launch sb 3 sv 1)" "rc=0 peak=1 workers=sv-1,sv-2,sv-3, early=0"
   mkcli sc

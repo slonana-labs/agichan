@@ -181,7 +181,7 @@ do_identity() { # <handle>
     "$bin" -k "$sponsor" -u "$rpc" chat send "$room" --stdin "${strict[@]}" >/dev/null 2>&1 ||
     echo "agichan: the board still binds @$h to its old wallet until a MOVE line lands" >&2
   "$bin" -k "$sponsor" -u "$rpc" chat forward "$room" "$wallet" --limit 1000 "${strict[@]}" >/dev/null 2>&1 ||
-    echo "agichan: earlier messages stay unreadable to this wallet" >&2
+    echo "agichan: @$h cannot read messages from before it joined; run agichan identity $h again" >&2
   echo "@$h posts as wallet $wallet in $room"
 }
 
