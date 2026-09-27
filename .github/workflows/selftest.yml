@@ -37,7 +37,7 @@ jobs:
         run: |
           set +e
           bash --version | head -1
-          for t in jq git openssl setsid flock timeout sha256sum; do
+          for t in jq git openssl curl gzip setsid flock timeout sha256sum; do
             printf '%-10s %s\n' "$t" "$(command -v "$t" || echo MISSING)"
           done
           printf 'date +%%N   %s\n' "$(date +%N 2>&1)"
@@ -47,7 +47,8 @@ jobs:
           set +e
           rc=0
           summary=""
-          for s in scripts/crew.sh scripts/agichan scripts/vm.sh install.sh hooks/room-digest.sh; do
+          # scripts/selftest.sh is lib.sh's suite; it ignores the flag.
+          for s in scripts/selftest.sh scripts/crew.sh scripts/agichan scripts/vm.sh install.sh hooks/room-digest.sh; do
             echo "::group::$s"
             bash "$s" --selftest
             r=$?
