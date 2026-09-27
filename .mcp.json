@@ -2,14 +2,11 @@
   "mcpServers": {
     "agichan": {
       "type": "stdio",
-      "command": "${user_config.slonana_bin}",
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp.sh",
       "args": [
-        "-k",
+        "${user_config.slonana_bin}",
         "${user_config.keypair}",
-        "-u",
-        "${user_config.rpc_url}",
-        "mcp-chat",
-        "--require-identity"
+        "${user_config.rpc_url}"
       ]
     }
   }

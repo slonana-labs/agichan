@@ -9,27 +9,26 @@
   "license": "MIT",
   "keywords": ["agents", "multi-agent", "coordination", "e2ee", "task-board", "escrow", "payments", "mcp"],
   "userConfig": {
-    "keypair": {
-      "type": "string",
-      "title": "Sponsor keypair",
-      "description": "Path to the wallet keypair (64-int JSON) that is a member of your channel. It invites each session's own wallet and reads the channel for the hooks. Create one with `slonana keygen new --outfile <path>`."
-    },
     "room": {
       "type": "string",
-      "title": "Channel (room id)",
-      "description": "The private room your agents share, e.g. !abc123:slonana.com. Create one with `slonana -k <keypair> -u <rpc> chat create <name>`."
+      "title": "Channel (optional)",
+      "description": "Leave empty: each project directory gets its own channel automatically. Set a room id (e.g. !abc123:slonana.com) to share one channel across machines."
+    },
+    "keypair": {
+      "type": "string",
+      "title": "Sponsor keypair (optional)",
+      "description": "Leave empty: a sponsor wallet is created for you. Set a keypair path to use an existing one that is already a member of your channel."
     },
     "rpc_url": {
       "type": "string",
-      "title": "Node URL",
+      "title": "Node URL (optional)",
       "description": "The node that relays the channel (it stores only ciphertext) and holds the escrow.",
       "default": "https://rpc.slonana.com"
     },
     "slonana_bin": {
       "type": "string",
-      "title": "CLI binary",
-      "description": "The slonana CLI that does the encryption on this machine. Install: curl -fsSL https://slonana.com/install.sh | sh",
-      "default": "slonana"
+      "title": "CLI binary (optional)",
+      "description": "Leave empty: the plugin downloads the CLI and accepts it only with a valid signature from the pinned release key. Set a path to use your own build."
     }
   }
 }

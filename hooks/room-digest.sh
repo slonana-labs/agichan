@@ -11,9 +11,11 @@
 # reads the room at most once per MIN_GAP seconds. That replaces a polling
 # loop: nothing runs while no session is active.
 #
-# Never breaks a session: missing config, a missing binary or an unreachable
-# node make `prompt` print nothing and `start` print one hint line. Exit 0.
+# Empty arguments mean automatic (scripts/lib.sh). Never breaks a session: a
+# failed setup or an unreachable node makes `prompt` print nothing and `start`
+# print one line with the reason. Exit 0.
 set -uo pipefail
+. "$(dirname "$0")/../scripts/lib.sh"
 
 MIN_GAP=60
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/agichan"
@@ -51,13 +53,20 @@ frame() { # <digest> <room>
 }
 
 run() { # <event> <bin> <keypair> <rpc> <room>
-  local event=$1 bin=$2 key=$3 rpc=$4 room=$5 input sid now d sum
+  local event=$1 bin key rpc=${4:-$AGICHAN_RPC_DEFAULT} room input sid now d sum
+  local cwd why
   input=$(cat 2>/dev/null || true)
-  if [ -z "$room" ] || [ -z "$key" ] || ! command -v "$bin" >/dev/null 2>&1; then
-    [ "$event" = start ] &&
-      echo "[agichan: not configured (room, keypair, or the slonana binary is missing); run /plugin to set it up]"
+  cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  cwd=${cwd:-$PWD}
+  # Empty settings mean automatic: first use installs the CLI, creates the
+  # sponsor wallet and this project's channel (lib.sh).
+  if ! why=$({ bin=$(agichan_bin "$2") && key=$(agichan_sponsor "$bin" "$rpc" "$3") &&
+    room=$(agichan_room "$bin" "$rpc" "$key" "$cwd" "$5") &&
+    printf '%s\n%s\n%s\n' "$bin" "$key" "$room"; } 2>&1); then
+    [ "$event" = start ] && echo "[agichan: setup did not finish: ${why##*$'\n'}]"
     return 0
   fi
+  { read -r bin; read -r key; read -r room; } <<<"$why"
   sid=$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]*\)".*/\1/p')
   sid=${sid:-nosession}
   mkdir -p "$CACHE_DIR" 2>/dev/null || true
@@ -87,12 +96,22 @@ selftest() {
   t=$tmp
   ck() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); echo "  ok   $1"; else
     fail=$((fail + 1)); echo "  FAIL $1 (got '$2', want '$3')"; fi; }
-  # A stand-in for `slonana`: `chat read` and `chat tasks` answer from files.
+  # A stand-in for `slonana`: `chat read` and `chat tasks` answer from files;
+  # keygen, login and create are counted in calls.log.
   cat >"$t/bin" <<'EOF'
 #!/usr/bin/env bash
-for a in "$@"; do case "$a" in read) cat "$(dirname "$0")/read.txt"; exit;;
-  tasks) cat "$(dirname "$0")/tasks.txt"; exit;; esac; done; exit 1
+d=$(dirname "$0")
+for a in "$@"; do case "$a" in
+  read) cat "$d/read.txt"; exit;;
+  tasks) cat "$d/tasks.txt"; exit;;
+  keygen) echo keygen >>"$d/calls.log"; while [ $# -gt 0 ]; do
+    [ "$1" = --outfile ] && echo '[1]' >"$2"; shift; done; exit;;
+  login) echo login >>"$d/calls.log"; exit;;
+  create) echo create >>"$d/calls.log"; n=$(grep -c create "$d/calls.log")
+    echo "{\"room_id\":\"!auto$n:x\"}"; exit;;
+esac; done; exit 1
 EOF
+  export CLAUDE_PLUGIN_DATA="$t/data"
   chmod +x "$t/bin"
   echo "alice -> @ALL | deploy freeze until 18:00" >"$t/read.txt"
   printf '%s\n' \
@@ -132,11 +151,24 @@ EOF
   ck "another session gets its own first digest" \
     "$(grep -c 'another' <<<"$out")" 1
 
-  out=$(printf '%s' "$j" | run prompt "$t/bin" key rpc "")
-  ck "unconfigured: a prompt stays silent" "$out" ""
-  out=$(printf '%s' "$j" | run start "$t/bin" key rpc "")
-  ck "unconfigured: start says how to set it up" \
-    "$(grep -c 'not configured' <<<"$out")" 1
+  local p1='{"session_id":"a-1","cwd":"/work/api"}'
+  local p2='{"session_id":"a-2","cwd":"/work/web"}'
+  out=$(printf '%s' "$p1" | run start "$t/bin" "" rpc "")
+  ck "no room set: this project's channel is created and named in the footer" \
+    "$(grep -cF 'chat_identity {handle, room: "!auto1:x"}' <<<"$out")" 1
+  out=$(printf '%s' '{"session_id":"a-3","cwd":"/work/api"}' | run start "$t/bin" "" rpc "")
+  ck "the same project reuses its channel (no second create)" \
+    "$(grep -cF '!auto1:x' <<<"$out") $(grep -c create "$t/calls.log")" "1 1"
+  out=$(printf '%s' "$p2" | run start "$t/bin" "" rpc "")
+  ck "another project gets its own channel" \
+    "$(grep -cF '!auto2:x' <<<"$out") $(grep -c create "$t/calls.log")" "1 2"
+  ck "the sponsor wallet is created once and logged in once" \
+    "$(grep -c keygen "$t/calls.log") $(grep -c login "$t/calls.log")" "1 1"
+  out=$(printf '%s' '{"session_id":"a-4","cwd":"/work/x"}' | run prompt "$t/nope" "" rpc "")
+  ck "a setup failure keeps a prompt silent" "$out" ""
+  out=$(printf '%s' '{"session_id":"a-5","cwd":"/work/x"}' | run start "$t/nope" "" rpc "")
+  ck "a setup failure is one line at start, with the reason" \
+    "$(grep -c 'setup did not finish: agichan:' <<<"$out")" 1
   printf '#!/usr/bin/env bash\necho "chat: not logged in: run slonana chat login" >&2\nexit 1\n' >"$t/bad"
   chmod +x "$t/bad"
   out=$(printf '%s' '{"session_id":"s-3"}' | run prompt "$t/bad" key rpc '!r:x')
@@ -153,6 +185,13 @@ EOF
 
 case "${1:-}" in
 --selftest) selftest ;;
-start | prompt) run "$1" "${2:-slonana}" "${3:-}" "${4:-}" "${5:-}"; exit 0 ;;
+# Settings come as arguments (manual runs, selftest) or, from Claude Code, as
+# CLAUDE_PLUGIN_OPTION_<KEY>: hooks that name an UNSET ${user_config.*} in their
+# args are refused outright, so hooks.json passes only the event.
+start | prompt)
+  run "$1" "${2:-${CLAUDE_PLUGIN_OPTION_SLONANA_BIN:-}}" \
+    "${3:-${CLAUDE_PLUGIN_OPTION_KEYPAIR:-}}" "${4:-${CLAUDE_PLUGIN_OPTION_RPC_URL:-}}" \
+    "${5:-${CLAUDE_PLUGIN_OPTION_ROOM:-}}"
+  exit 0 ;;
 *) echo "usage: room-digest.sh <start|prompt> <bin> <keypair> <rpc> <room> | --selftest" >&2; exit 2 ;;
 esac
