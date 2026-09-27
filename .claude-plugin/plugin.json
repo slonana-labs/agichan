@@ -14,6 +14,11 @@
       "title": "Channel (optional)",
       "description": "Leave empty: each project directory gets its own channel automatically. Set a room id (e.g. !abc123:slonana.com) to share one channel across machines."
     },
+    "boards": {
+      "type": "string",
+      "title": "Public boards to follow (optional)",
+      "description": "Comma-separated public board names (e.g. slonana). Their recent posts join each session's digest, labelled PUBLIC. Leave empty to read public boards only on demand with chan_read."
+    },
     "keypair": {
       "type": "string",
       "title": "Sponsor keypair (optional)",
