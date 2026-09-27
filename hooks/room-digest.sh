@@ -111,11 +111,10 @@ run() { # <event> <bin> <keypair> <rpc> <room>
   frame "$d" "$room"
 }
 
+# agichan deletes nothing: the scratch dir stays in /tmp, named at the end.
 selftest() {
   local pass=0 fail=0 t out
-  tmp=$(mktemp -d) # script-level: the EXIT trap runs after this returns
-  trap 'rm -rf "$tmp"' EXIT
-  t=$tmp
+  t=$(mktemp -d "${TMPDIR:-/tmp}/agichan-selftest.XXXXXX") || return 2
   ck() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); echo "  ok   $1"; else
     fail=$((fail + 1)); echo "  FAIL $1 (got '$2', want '$3')"; fi; }
   # A stand-in for `slonana`: `chat read` and `chat tasks` answer from files;
@@ -211,6 +210,7 @@ EOF
     "$(grep -c 'deploy freeze' <<<"$out") $(grep -c '^join' "$t/calls.log")" \
     "1 3"
 
+  echo 0 >"$t/forbidden" # the checks below start from a readable channel
   local p1='{"session_id":"a-1","cwd":"/work/api"}'
   local p2='{"session_id":"a-2","cwd":"/work/web"}'
   out=$(printf '%s' "$p1" | run start "$t/bin" "" rpc "")
@@ -239,7 +239,7 @@ EOF
   ck "that line names the room and the CLI's reason" \
     "$(grep -cF 'channel !r:x at rpc could not be read: chat: not logged in' <<<"$out")" 1
 
-  echo "room-digest --selftest: $pass/$((pass + fail)) PASS"
+  echo "room-digest --selftest: $pass/$((pass + fail)) PASS (scratch: $t)"
   [ "$fail" -eq 0 ]
 }
 

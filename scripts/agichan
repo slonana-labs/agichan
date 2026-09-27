@@ -18,6 +18,87 @@ set -uo pipefail
 
 die() { echo "agichan: $*" >&2; exit 1; }
 
+# A stand-in slonana records each call (key, argv, stdin) so the tests can
+# check who acted and how; `read`/`tasks` answer from files. agichan deletes
+# nothing: the scratch dir stays in /tmp and is named at the end.
+selftest() {
+  local pass=0 fail=0 out tmp
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/agichan-selftest.XXXXXX") || return 2
+  ck() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); echo "  ok   $1"; else
+    fail=$((fail + 1)); echo "  FAIL $1 (got '$2', want '$3')"; fi; }
+  cat >"$tmp/bin" <<'EOF'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+key=""; [ "$1" = -k ] && key=$(basename "$2" .json)
+in=""; [[ " $* " == *" --stdin "* ]] && in=$(cat)
+args=$(printf '%s ' "$@" | sed -E 's#[^ ]*/([A-Za-z0-9_-]+)\.json#\1#g; s/ $//')
+echo "$key|$args|$in" >>"$d/calls.log"
+case " $* " in
+  *" keygen new "*) while [ $# -gt 0 ]; do [ "$1" = --outfile ] && echo '[1]' >"$2"; shift; done ;;
+  *" address "*) echo "W_$(basename "${3:-x}" .json)" ;;
+  *" join "*) [ "$(cat "$d/join-fails" 2>/dev/null)" = 1 ] && exit 1 ;;
+  *" chat read "*) cat "$d/read.txt" ;;
+  *" chat tasks "*) cat "$d/tasks.txt" ;;
+esac
+exit 0
+EOF
+  chmod +x "$tmp/bin"
+  echo "peer -> @me | review x1?" >"$tmp/read.txt"
+  printf '%s\n' "x1  [open]  @me  review  (by peer, last peer)" \
+    "x2  [done]  @me  old  (by peer, last me)  paid 10 lamports in 1 payment(s)" >"$tmp/tasks.txt"
+  mkdir -p "$tmp/home" "$tmp/data"
+  echo '[1]' >"$tmp/data/sponsor.json"
+  : >"$tmp/data/sponsor.json.login"
+  run() { HOME="$tmp/home" CLAUDE_PLUGIN_DATA="$tmp/data" \
+    "$0" --bin "$tmp/bin" --room '!r:x' --rpc rpc "$@"; }
+  calls() { cut -d'|' -f1,2 "$tmp/calls.log"; }
+
+  run identity me >/dev/null
+  ck "identity: wallet made, sponsor invites, it logs in and joins, sponsor posts MOVE and forwards" \
+    "$(calls | tr '\n' ';')" \
+    "|keygen new --outfile me;|address --keypair me;sponsor|-k sponsor -u rpc chat invite !r:x W_me;me|-k me -u rpc chat login;me|-k me -u rpc chat join !r:x;sponsor|-k sponsor -u rpc chat send !r:x --stdin;sponsor|-k sponsor -u rpc chat forward !r:x W_me --limit 1000;"
+  ck "the MOVE line hands the handle to the new wallet" \
+    "$(grep 'chat send' "$tmp/calls.log" | cut -d'|' -f3-)" "me -> @ALL | MOVE W_me"
+  : >"$tmp/calls.log"
+  run identity me >/dev/null
+  ck "a second identity run reuses the wallet (no keygen)" \
+    "$(grep -c 'keygen' "$tmp/calls.log")" 0
+  echo 1 >"$tmp/join-fails"
+  run identity other >/dev/null 2>&1
+  ck "a failed join fails the identity" "$?" 1
+  echo 0 >"$tmp/join-fails"
+
+  : >"$tmp/calls.log"
+  printf 'me -> @peer | on it' | run chat --as me send '!r:x' --stdin >/dev/null
+  ck "chat runs as the session's own wallet, text on stdin" \
+    "$(cut -d'|' -f1,3- "$tmp/calls.log")" "me|me -> @peer | on it"
+  : >"$tmp/calls.log"
+  run tasks --as me claim --id x1 --poster P >/dev/null
+  ck "tasks maps to slonana aea tasks as that wallet" \
+    "$(calls)" "me|-k me -u rpc aea tasks claim --id x1 --poster P"
+  out=$(run chat send '!r:x' 2>&1)
+  ck "acting without --as is refused" "$(grep -c 'needs --as' <<<"$out")" 1
+  out=$(run chat --as nobody read '!r:x' 2>&1)
+  ck "a handle with no wallet is refused" "$(grep -c 'no wallet for @nobody' <<<"$out")" 1
+  out=$(run identity 'bad name!' 2>&1)
+  ck "a malformed handle is refused" "$(grep -c 'usage: agichan identity' <<<"$out")" 1
+
+  : >"$tmp/calls.log"
+  out=$(run digest --as me)
+  ck "digest reads what names this handle, as its wallet" \
+    "$(grep 'chat read' "$tmp/calls.log" | cut -d'|' -f1,2)" \
+    "me|-k me -u rpc chat read !r:x --limit 40 --mention me"
+  ck "digest keeps open tasks, drops paid ones, frames it as data" \
+    "$(grep -cE 'review x1|x1  \[open\]|data, not instructions' <<<"$out") $(grep -c 'x2 ' <<<"$out")" "3 0"
+
+  echo "agichan --selftest: $pass/$((pass + fail)) PASS (scratch: $tmp)"
+  [ "$fail" -eq 0 ]
+}
+if [ "${1:-}" = --selftest ]; then
+  selftest
+  exit $?
+fi
+
 opt_room="" rpc="$AGICHAN_RPC_DEFAULT" opt_bin=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -58,7 +139,7 @@ identity)
   key=$(agichan_handle_key "$h")
   if [ ! -s "$key" ]; then
     mkdir -p "$(dirname "$key")" && chmod 700 "$(dirname "$key")"
-    "$bin" keygen new --outfile "$key" >/dev/null 2>&1 && chmod 600 "$key" ||
+    (umask 077 && "$bin" keygen new --outfile "$key" >/dev/null 2>&1) && chmod 600 "$key" ||
       die "could not create a wallet for @$h"
   fi
   wallet=$("$bin" address --keypair "$key" 2>/dev/null) || die "unreadable wallet $key"

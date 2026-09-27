@@ -19,6 +19,8 @@
 AGICHAN_RELEASE_BASE="https://slonana.com/dl"
 AGICHAN_RELEASE_KEY="GX8ntPDTJoAh3w7uC9AHazPcSCqGGScJZXkPUZMCrGUk"
 AGICHAN_RPC_DEFAULT="https://rpc.slonana.com"
+AGICHAN_MAX_CLI_MIB=512 # a download unpacking to more is refused unread
+AGICHAN_LIB=$(readlink -f "${BASH_SOURCE[0]}")
 
 # Data directory: Claude Code's per-plugin one; else, when installed by
 # install.sh as <prefix>/app/scripts/lib.sh, <prefix>; else the default.
@@ -86,39 +88,114 @@ agichan_verify_sig() { # <digest_hex> <sig_b58> <pubkey_b58> <work>
     -in "$4/digest.bin" -sigfile "$4/sig.bin" >/dev/null 2>&1
 }
 
-# Downloads <base>/slonana.gz + manifest into <dest>, accepting it only when
-# the digest matches the manifest AND the manifest's signature verifies under
-# <pubkey>. The binary is not executed before that.
-agichan_fetch_release() { # <base> <pubkey_b58> <dest>
-  local t
-  for t in curl gunzip sha256sum openssl awk flock; do
-    command -v "$t" >/dev/null 2>&1 || { echo "agichan: needs '$t' to install the CLI" >&2; return 1; }
-  done
-  ( # subshell: the EXIT trap removes this run's own scratch dir
-    tmp=$(mktemp -d) || exit 1
-    trap 'rm -rf "$tmp"' EXIT
-    curl -fsSL "$1/slonana.manifest.json" -o "$tmp/m.json" &&
-      curl -fsSL "$1/slonana.gz" -o "$tmp/s.gz" &&
-      gunzip -c "$tmp/s.gz" >"$tmp/slonana" ||
-      { echo "agichan: could not download the CLI from $1" >&2; exit 1; }
-    sha=$(sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1/p' "$tmp/m.json")
-    sig=$(sed -n 's/.*"signature":"\([1-9A-HJ-NP-Za-km-z]*\)".*/\1/p' "$tmp/m.json")
-    [ -n "$sha" ] && [ "$(sha256sum "$tmp/slonana" | cut -c1-64)" = "$sha" ] ||
-      { echo "agichan: downloaded CLI does not match its manifest digest; not installed" >&2; exit 1; }
-    agichan_verify_sig "$sha" "$sig" "$2" "$tmp" ||
-      { echo "agichan: release signature does not verify under the pinned key; not installed" >&2; exit 1; }
-    # Staged beside the target so the final rename is atomic (same filesystem).
-    mkdir -p "$(dirname "$3")" && cp "$tmp/slonana" "$3.new" && chmod +x "$3.new" &&
-      cp "$tmp/m.json" "$3.manifest.json" && mv -f "$3.new" "$3"
-  )
+# 0 when this machine's openssl can check Ed25519 at all: it must accept a
+# published release's (v0.1.9055) signature under the release key. Tells "the
+# signature is bad" apart from "OpenSSL is older than 3.0" (no -rawin).
+agichan_verifier_works() { # <work>
+  mkdir -p "$1/ctl" &&
+    agichan_verify_sig e3e0b4564f141889f8964b1309c8620e7fc8f98d7d1181a931713f296b4c7cfd \
+      3NeCH5LRzg1cDTXTyCyoixtsG8wYMRKvtsGYUGZ71VMbUBHUNWXqsDmpn7gxSCRNdhvXBd2JQwZuEtb54uc7jgQ6 \
+      GX8ntPDTJoAh3w7uC9AHazPcSCqGGScJZXkPUZMCrGUk "$1/ctl"
 }
 
-# Serialises first-run steps across processes.
+# A release version is v<major>.<minor>.<patch>-slon, as every published
+# manifest carries. Only a constrained string makes "the signed binary
+# contains it" mean anything (slonana's update.cpp, is_release_version).
+agichan_is_release_version() { [[ ${1:-} =~ ^v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}-slon$ ]]; }
+
+# 0 when release version $1 is newer than release version $2.
+agichan_newer() {
+  local -a a b
+  local i
+  agichan_is_release_version "${1:-}" && agichan_is_release_version "${2:-}" || return 1
+  IFS=. read -r -a a <<<"${1#v}"
+  IFS=. read -r -a b <<<"${2#v}"
+  a[2]=${a[2]%-slon} b[2]=${b[2]%-slon}
+  for i in 0 1 2; do
+    ((10#${a[i]} > 10#${b[i]})) && return 0
+    ((10#${a[i]} < 10#${b[i]})) && return 1
+  done
+  return 1
+}
+
+# curl for the release site: https only, redirects included (file:// is for
+# the selftest's fake site); gives up on a connection that stalls.
+agichan_curl() { curl -fsSL --proto '=https,file' --proto-redir '=https' \
+  --connect-timeout 20 --speed-limit 1024 --speed-time 60 "$@"; }
+
+# Installs <base>'s published CLI at <dest> only when all of these hold:
+#  1. the manifest names a release version newer than <dest>'s (if any);
+#  2. the binary unpacks to under AGICHAN_MAX_CLI_MIB and its SHA-256 is the
+#     manifest's;
+#  3. the manifest's signature over that digest verifies under <pubkey>;
+#  4. the verified binary contains the manifest's version string.
+# The signature covers the digest only, never the version field, so 1 and 4
+# together are what stop a downgrade to an old, genuinely signed release.
+# Nothing runs before all four hold. Staged in <dest's dir>/.fetch (mode 700),
+# which the next fetch overwrites: agichan deletes nothing.
+agichan_fetch_release() { # <base> <pubkey_b58> <dest>
+  local t st m sha sig ver have n cap=$((AGICHAN_MAX_CLI_MIB << 20))
+  local -a s
+  for t in curl gunzip sha256sum openssl awk flock grep; do
+    command -v "$t" >/dev/null 2>&1 || { echo "agichan: needs '$t' to install the CLI" >&2; return 1; }
+  done
+  st="$(dirname "$3")/.fetch"
+  (umask 077 && mkdir -p "$st") && chmod 700 "$st" || return 1 # bin/ too: it holds the executable
+  m="$st/m.json"
+  agichan_curl --max-time 30 --max-filesize 65536 "$1/slonana.manifest.json" -o "$m" ||
+    { echo "agichan: could not download the release manifest from $1" >&2; return 1; }
+  sha=$(sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1/p' "$m")
+  sig=$(sed -n 's/.*"signature":"\([1-9A-HJ-NP-Za-km-z]\{64,100\}\)".*/\1/p' "$m")
+  ver=$(agichan_version_of "$m")
+  [ -n "$sha" ] && [ -n "$sig" ] && agichan_is_release_version "$ver" ||
+    { echo "agichan: the release manifest at $1 is malformed; not installed" >&2; return 1; }
+  have=$(agichan_version_of "$3.manifest.json")
+  if agichan_is_release_version "$have" && ! agichan_newer "$ver" "$have"; then
+    echo "agichan: $ver is not newer than the installed $have; not installed" >&2
+    return 1
+  fi
+  agichan_curl "$1/slonana.gz" | gunzip -c 2>/dev/null | head -c "$cap" >"$st/slonana"
+  s=("${PIPESTATUS[@]}")
+  n=$(wc -c <"$st/slonana")
+  [ "$((n))" -lt "$cap" ] ||
+    { echo "agichan: the CLI at $1 unpacks to over $AGICHAN_MAX_CLI_MIB MiB; not installed" >&2; return 1; }
+  [ "${s[0]}" = 0 ] && [ "${s[1]}" = 0 ] ||
+    { echo "agichan: could not download the CLI from $1" >&2; return 1; }
+  [ "$(sha256sum "$st/slonana" | cut -c1-64)" = "$sha" ] ||
+    { echo "agichan: downloaded CLI does not match its manifest digest; not installed" >&2; return 1; }
+  if ! agichan_verify_sig "$sha" "$sig" "$2" "$st"; then
+    if agichan_verifier_works "$st"; then
+      echo "agichan: release signature does not verify under the pinned key; not installed" >&2
+    else
+      echo "agichan: this openssl cannot check Ed25519 signatures (needs OpenSSL 3.0 or later); not installed" >&2
+    fi
+    return 1
+  fi
+  grep -qaF -- "$ver" "$st/slonana" ||
+    { echo "agichan: the signed CLI does not carry its manifest's version $ver; not installed" >&2; return 1; }
+  # Same directory as <dest>, so each rename is atomic.
+  chmod 755 "$st/slonana" && cp "$m" "$st/installed.json" &&
+    mv -f "$st/slonana" "$3" && mv -f "$st/installed.json" "$3.manifest.json"
+}
+
+# Serialises first-run steps across processes. The data dir holds keys, so a
+# new one is private to this user.
 agichan_locked() { # <cmd...>
   local d
   d=$(agichan_data)
-  mkdir -p "$d" || return 1
+  mkdir -p "$(dirname "$d")" && (umask 077 && mkdir -p "$d") || return 1
   (flock -w 300 9 || exit 1; "$@") 9>"$d/.lock"
+}
+
+# Runs lib function <fn> <args...> in a new bash, detached: no stdio and its
+# own session, so a hook or server that exits or times out never waits on it.
+agichan_detach() { # <fn> <args...>
+  local -a run=(bash -c '. "$1"; shift; "$@"' agichan-bg "$AGICHAN_LIB" "$@")
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "${run[@]}" </dev/null >/dev/null 2>&1 &
+  else
+    ("${run[@]}" </dev/null >/dev/null 2>&1 &)
+  fi
 }
 
 # Prints the CLI path: an explicit one, else the verified download in the data
@@ -129,10 +206,13 @@ agichan_bin() { # [override]
   if [ -n "${1:-}" ]; then printf '%s' "$1"; return 0; fi
   d=$(agichan_data)
   if [ -x "$d/bin/slonana" ]; then
-    # At most daily: a newer published release replaces this one, through the
-    # same signature check. Any failure keeps the installed, verified copy.
+    # At most daily, a newer published release replaces this one through the
+    # same checks, in the background: a hook or a server start never waits on
+    # a download, and any failure keeps the installed, verified copy.
     if [ -z "$(find "$d/bin/slonana.checked" -mmin -1440 2>/dev/null)" ]; then
-      agichan_locked _agichan_update "$d/bin/slonana" 2>/dev/null || true
+      : >"$d/bin/slonana.checked"
+      agichan_detach agichan_locked _agichan_update "$d/bin/slonana" \
+        "$AGICHAN_RELEASE_BASE" "$AGICHAN_RELEASE_KEY"
     fi
     printf '%s' "$d/bin/slonana"
     return 0
@@ -145,21 +225,27 @@ agichan_bin() { # [override]
   printf '%s' "$d/bin/slonana"
 }
 _agichan_install() {
-  [ -x "$1" ] || agichan_fetch_release "$AGICHAN_RELEASE_BASE" "$AGICHAN_RELEASE_KEY" "$1"
+  if [ ! -x "$1" ]; then
+    agichan_fetch_release "$AGICHAN_RELEASE_BASE" "$AGICHAN_RELEASE_KEY" "$1" || return 1
+  fi
   : >"$1.checked"
 }
 
 agichan_version_of() { sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$1" 2>/dev/null; }
 
-# Replaces <dest> when the published manifest names another version. The
-# check is recorded even when it fails, so an outage costs one try a day.
-_agichan_update() { # <dest>
-  local now
+# Replaces <dest> when <base> publishes a newer release version. The check is
+# recorded even when it fails, so an outage costs one try a day.
+_agichan_update() { # <dest> <base> <pubkey_b58>
+  local now have
   : >"$1.checked"
-  now=$(curl -fsSL --max-time 10 "$AGICHAN_RELEASE_BASE/slonana.manifest.json" |
+  now=$(agichan_curl --max-time 30 --max-filesize 65536 "$2/slonana.manifest.json" |
     sed -n 's/.*"version":"\([^"]*\)".*/\1/p') || return 1
-  [ -n "$now" ] && [ "$now" != "$(agichan_version_of "$1.manifest.json")" ] || return 0
-  agichan_fetch_release "$AGICHAN_RELEASE_BASE" "$AGICHAN_RELEASE_KEY" "$1"
+  agichan_is_release_version "$now" || return 1
+  have=$(agichan_version_of "$1.manifest.json")
+  if agichan_is_release_version "$have" && ! agichan_newer "$now" "$have"; then
+    return 0
+  fi
+  agichan_fetch_release "$2" "$3" "$1"
 }
 
 # Prints the sponsor keypair path: an explicit one, or one created and logged
@@ -173,7 +259,7 @@ agichan_sponsor() { # <bin> <rpc> [override]
 }
 _agichan_sponsor() {
   if [ ! -s "$3" ]; then
-    "$1" keygen new --outfile "$3" >/dev/null 2>&1 && chmod 600 "$3" ||
+    (umask 077 && "$1" keygen new --outfile "$3" >/dev/null 2>&1) && chmod 600 "$3" ||
       { echo "agichan: could not create the sponsor wallet" >&2; return 1; }
   fi
   [ -f "$3.login" ] && return 0
@@ -195,7 +281,9 @@ agichan_room() { # <bin> <rpc> <key> <project_dir> [override]
 _agichan_room() {
   local name id
   [ -s "$5" ] && return 0
-  name="agichan-$(basename "$4" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-40)"
+  # A random name: the relay stores room names in plaintext, and a project's
+  # directory name is not its business.
+  name="agichan-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   id=$("$1" -k "$3" -u "$2" chat create "$name" 2>/dev/null |
     sed -n 's/.*"room_id":"\(![^"]*\)".*/\1/p')
   [ -n "$id" ] || { echo "agichan: could not create a channel on $2" >&2; return 1; }
