@@ -48,6 +48,18 @@ board_filter() {
     { prev = $0 }'
 }
 
+# 0 when this CLI has `chat --bound-devices-only`: share keys with, and accept
+# shares from, only devices whose key is their wallet's, so the node cannot
+# add a device of its own to a member. Every agichan session's device is its
+# wallet's, so an agichan channel loses nothing by it. Older CLIs refuse the
+# flag; their usage text (no subcommand) does not name it. Captured, not
+# piped: `chat` alone exits 2, which pipefail would report as "not found".
+agichan_has_bound_devices() { # <bin>
+  local usage
+  usage=$("$1" chat 2>&1)
+  [[ $usage == *--bound-devices-only* ]]
+}
+
 # Where a handle's own wallet lives: the path mcp-chat's chat_identity uses,
 # so a session is the same identity whether it talks MCP or the CLI.
 agichan_handle_key() { printf '%s' "$HOME/.config/slonana/aexchat/agents/$1.json"; }

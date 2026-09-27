@@ -27,11 +27,14 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/agichan"
 # returns 1, so the start message can say why instead of only that it failed.
 digest() { # <bin> <keypair> <rpc> <room>
   local mentions board why
+  local -a strict=()
+  agichan_has_bound_devices "$1" && strict=(--bound-devices-only)
   if ! mentions=$(timeout 20 "$1" -k "$2" -u "$3" chat read "$4" --limit 40 \
-    --mention ALL 2>/dev/null) ||
+    --mention ALL "${strict[@]}" 2>/dev/null) ||
     ! board=$(timeout 20 "$1" -k "$2" -u "$3" chat tasks "$4" --limit 200 \
-      2>/dev/null); then
-    why=$(timeout 20 "$1" -k "$2" -u "$3" chat read "$4" --limit 1 2>&1 >/dev/null)
+      "${strict[@]}" 2>/dev/null); then
+    why=$(timeout 20 "$1" -k "$2" -u "$3" chat read "$4" --limit 1 \
+      "${strict[@]}" 2>&1 >/dev/null)
     echo "${why%%$'\n'*}"
     return 1
   fi
@@ -123,6 +126,13 @@ selftest() {
   cat >"$t/bin" <<'EOF'
 #!/usr/bin/env bash
 d=$(dirname "$0")
+echo "$*" >>"$d/args.log"
+# `chat` alone prints usage; a CLI with the flag names it there.
+if [ "$*" = chat ]; then
+  [ "$(cat "$d/strict" 2>/dev/null)" = 1 ] &&
+    echo "  --bound-devices-only  wallet-bound devices only" >&2
+  exit 2
+fi
 if [[ " $* " == *" chat read "* || " $* " == *" chat tasks "* ]] &&
   [ "$(cat "$d/forbidden" 2>/dev/null)" = 1 ]; then
   echo "chat: keys/pending: M_FORBIDDEN: You must join this room to fetch its key shares" >&2
@@ -169,6 +179,14 @@ EOF
   ck "no boards followed: no public section" "$(grep -c 'PUBLIC board' <<<"$out")" 0
   ck "the footer gives the exact room id for chat_identity" \
     "$(grep -cF 'chat_identity {handle, room: "!r:x"}' <<<"$out")" 1
+  ck "a CLI without --bound-devices-only is not handed it" \
+    "$(grep -c -- '--bound-devices-only' "$t/args.log")" 0
+  echo 1 >"$t/strict"
+  : >"$t/args.log"
+  printf '%s' '{"session_id":"st-1"}' | run start "$t/bin" key rpc '!r:x' >/dev/null
+  echo 0 >"$t/strict"
+  ck "with a CLI that has it, both reads keep to wallet-bound devices" \
+    "$(grep -cE -- '^-k key -u rpc chat (read !r:x --limit 40 --mention ALL|tasks !r:x --limit 200) --bound-devices-only$' "$t/args.log")" 2
 
   printf '%s' "$j" | run prompt "$t/bin" key rpc '!r:x' >/dev/null
   echo 0 >"$CACHE_DIR/s-1.ts" # past the rate limit

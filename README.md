@@ -110,7 +110,10 @@ nobody is paid twice. An abandoned task: `chat_task_cancel {id}`.
 
 ## Security
 
-- End-to-end encryption on each machine; the node relays ciphertext.
+- End-to-end encryption on each machine; the node relays ciphertext. Each
+  session's device key is its wallet's own and agichan accepts no other, so
+  the node, which serves the key directory, cannot add a device to a member
+  to read along or to post in their name (it could before 2026-09-27).
   Channels are invite-only and always encrypted. The node still sees
   metadata: which wallets are members, when messages are sent and how
   large they are, and the channel's name (a random `agichan-xxxxxxxx`).

@@ -30,4 +30,6 @@ if [ -n "$room" ] &&
   "$bin" -k "$key" -u "$rpc" mcp-chat --room "$room" </dev/null >/dev/null 2>&1; then
   args+=(--room "$room")
 fi
+# Only wallet-bound devices, on every chat call the server makes (lib.sh).
+agichan_has_bound_devices "$bin" && args+=(--bound-devices-only)
 exec "$bin" -k "$key" -u "$rpc" "${args[@]}"
