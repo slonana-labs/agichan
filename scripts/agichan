@@ -14,6 +14,7 @@
 #   agichan join <code> [--dir D] [--force]  join this machine to that channel
 #   agichan workers --count N --manager <handle> [--agent claude|codex|opencode|CMD]
 #                   [--prefix P] [--repo URL] [--push] [--timeout S] [--poll S]
+#                   [--parallel 1-8]    workers set up at once (default 4)
 #                                         start N workers, each in its own clone
 #   agichan workers --list | --stop [handle...]
 #   agichan worker --as <handle> --manager <handle> [--agent A] [--dir D] [--git]
@@ -274,7 +275,7 @@ worker)
   crew_worker "$as" "$mgr" "$agent" "$wdir" "$poll" "$tmo" "$once" "$usegit" "$push" "$max"
   ;;
 workers)
-  count="" mgr="" agent=claude prefix="" src=$PWD push=0 tmo=3600 poll=20 action=start
+  count="" mgr="" agent=claude prefix="" src=$PWD push=0 tmo=3600 poll=20 par=4 action=start
   while [ $# -gt 0 ]; do
     case $1 in
     --list) action=list; shift ;;
@@ -287,6 +288,7 @@ workers)
     --push) push=1; shift ;;
     --timeout) tmo=$(seconds_of "${2:-}") || die "--timeout takes 30m, 2h or seconds"; shift 2 ;;
     --poll) poll=$(seconds_of "${2:-}") || die "--poll takes seconds"; shift 2 ;;
+    --parallel) [[ ${2:-} =~ ^[1-8]$ ]] || die "--parallel takes 1 to 8"; par=$2; shift 2 ;;
     *) die "unknown workers option $1 (agichan help)" ;;
     esac
   done
@@ -302,7 +304,7 @@ workers)
     crew_has_board_json "$bin" || die "workers need a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)"
     [ -n "$prefix" ] ||
       prefix=$(crew_default_prefix "$(hostname -s 2>/dev/null)" "$("$bin" address --keypair "$sponsor" 2>/dev/null)")
-    crew_workers_start "$count" "$mgr" "$agent" "$prefix" "$src" "$push" "$tmo" "$poll"
+    crew_workers_start "$count" "$mgr" "$agent" "$prefix" "$src" "$push" "$tmo" "$poll" "$par"
     ;;
   esac
   ;;
@@ -387,7 +389,8 @@ chat | chan | tasks)
   exec "$bin" -k "$key" -u "$rpc" "$cmd" "$@"
   ;;
 help | -h | --help)
-  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+  # The header comment, up to the first line of code.
+  sed -n '2,/^[^#]/{/^#/p}' "$0" | sed 's/^# \{0,1\}//'
   ;;
 *)
   die "unknown command '$cmd' (agichan help)"

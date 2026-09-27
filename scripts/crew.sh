@@ -239,7 +239,8 @@ crew_worker() { # <me> <mgr> <agent> <dir> <poll s> <timeout s> <once> <git> <pu
     { echo "agichan: worker needs a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)" >&2; return 2; }
   key=$(agichan_handle_key "$me" "$opt_keys")
   [ -s "$key" ] || { echo "agichan: no wallet for @$me (agichan identity $me)" >&2; return 1; }
-  wd=$(agichan_data)/workers
+  data=$(agichan_data)
+  wd=$data/workers
   (umask 077 && mkdir -p "$wd/$me") && chmod 700 "$wd" "$wd/$me" || return 1
   stopf="$wd/$me.stop"
   started=$(date +%s)
@@ -379,13 +380,17 @@ crew_alive() { # <pid file> <handle>
 # local checkout) and its own handle <prefix>-<i>. Each is detached: it lives
 # past this shell, logs to the data dir, and stops after its task in hand on
 # `agichan workers --stop` or its manager's STOP.
-crew_workers_start() { # <count> <mgr> <agent> <prefix> <src> <push: 0|1> <timeout> <poll>
-  local i h slot wd up
-  local -a o=(--room "$room" --rpc "$rpc")
+crew_workers_start() { # <count> <mgr> <agent> <prefix> <src> <push: 0|1> <timeout> <poll> [parallel]
+  local i h slot data wd up par=${9:-4} failed=0
+  local -a o=(--room "$room" --rpc "$rpc") todo=() p=() hs=() ps=() bad=()
   [ -n "$opt_bin" ] && o+=(--bin "$opt_bin")
   [ -n "$opt_keys" ] && o+=(--keys "$opt_keys")
-  wd=$(agichan_data)/workers
+  [ "$6" = 1 ] && p=(--push)
+  [[ $par =~ ^[1-8]$ ]] || { echo "agichan: --parallel takes 1 to 8" >&2; return 2; }
+  data=$(agichan_data)
+  wd=$data/workers
   (umask 077 && mkdir -p "$wd") || return 1
+  # Each worker's own clone, in turn: local and quick.
   for ((i = 1; i <= $1; i++)); do
     h="$4-$i"
     agichan_valid_handle "$h" || { echo "agichan: $h is not a handle" >&2; return 2; }
@@ -393,7 +398,7 @@ crew_workers_start() { # <count> <mgr> <agent> <prefix> <src> <push: 0|1> <timeo
       echo "agichan: @$h is already running"
       continue
     fi
-    slot=$(agichan_data)/work/$h
+    slot=$data/work/$h
     if [ ! -d "$slot/.git" ]; then
       git clone -q "$5" "$slot" 2>/dev/null || { echo "agichan: could not clone $5" >&2; return 1; }
       # A local checkout's clone pushes where the checkout does.
@@ -401,14 +406,32 @@ crew_workers_start() { # <count> <mgr> <agent> <prefix> <src> <push: 0|1> <timeo
         git -C "$slot" remote set-url origin "$up"
       fi
     fi
-    "$AGICHAN_CLI" "${o[@]}" identity "$h" >>"$wd/$h.log" 2>&1 ||
-      { echo "agichan: could not set up @$h (see $wd/$h.log)" >&2; return 1; }
-    local -a p=()
-    [ "$6" = 1 ] && p=(--push)
-    setsid "$AGICHAN_CLI" "${o[@]}" worker --as "$h" --manager "$2" --agent "$3" --dir "$slot" \
-      --git "${p[@]}" --timeout "$7" --poll "${8:-20}" </dev/null >>"$wd/$h.log" 2>&1 &
-    echo "agichan: started @$h in $slot (log $wd/$h.log)"
+    todo+=("$h")
   done
+  # Wallets and channel membership, in batches of <parallel>. Each worker's
+  # own login and join overlap; the sponsor's invite, MOVE and forward take
+  # turns on its state file's lock, which a chat command waits on for 60 s,
+  # hence the cap of 8. A failed setup does not hold back the others.
+  for h in "${todo[@]}"; do
+    "$AGICHAN_CLI" "${o[@]}" identity "$h" >>"$wd/$h.log" 2>&1 &
+    hs+=("$h")
+    ps+=("$!")
+    [ "${#ps[@]}" -lt "$par" ] && continue
+    for i in "${!ps[@]}"; do wait "${ps[$i]}" || bad+=("${hs[$i]}"); done
+    hs=() ps=()
+  done
+  for i in "${!ps[@]}"; do wait "${ps[$i]}" || bad+=("${hs[$i]}"); done
+  for h in "${todo[@]}"; do
+    if [[ " ${bad[*]} " == *" $h "* ]]; then
+      echo "agichan: could not set up @$h (see $wd/$h.log)" >&2
+      failed=1
+      continue
+    fi
+    setsid "$AGICHAN_CLI" "${o[@]}" worker --as "$h" --manager "$2" --agent "$3" --dir "$data/work/$h" \
+      --git "${p[@]}" --timeout "$7" --poll "${8:-20}" </dev/null >>"$wd/$h.log" 2>&1 &
+    echo "agichan: started @$h in $data/work/$h (log $wd/$h.log)"
+  done
+  return "$failed"
 }
 
 # w-<host>-<first 4 of this machine's sponsor wallet>. The wallet part keeps
@@ -427,7 +450,8 @@ crew_default_prefix() { # <hostname> <sponsor wallet>
 # their start. Nothing is killed and nothing is deleted.
 crew_workers_stop() { # [handle...]
   local wd f h
-  wd=$(agichan_data)/workers
+  data=$(agichan_data)
+  wd=$data/workers
   for f in "$wd"/*.pid; do
     [ -f "$f" ] || continue
     h=$(basename "$f" .pid)
@@ -438,7 +462,8 @@ crew_workers_stop() { # [handle...]
 
 crew_workers_list() {
   local wd f h
-  wd=$(agichan_data)/workers
+  data=$(agichan_data)
+  wd=$data/workers
   for f in "$wd"/*.pid; do
     [ -f "$f" ] || continue
     h=$(basename "$f" .pid)
@@ -764,6 +789,45 @@ EOF
   local p1
   p1=$(crew_default_prefix "$(printf 'a%.0s' $(seq 1 80))" Wxyz)-10
   ck "and the longest one is still a valid handle" "$(agichan_valid_handle "$p1" && echo yes)" yes
+
+  # Starting workers. A stand-in agichan per case logs `start|end <handle>`
+  # around a 0.4 s setup and `worker <handle>` for a start; setups for the
+  # handles in its fail file fail.
+  git init -q "$t/src" && git -C "$t/src" -c user.name=t -c user.email=t@x commit -q --allow-empty -m base
+  mkcli() {
+    mkdir -p "$t/$1" && : >"$t/$1/fail" && : >>"$t/$1/log"
+    cat >"$t/$1/cli" <<'EOF'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+while [ $# -gt 0 ]; do case $1 in --room | --rpc | --bin | --keys) shift 2 ;; *) break ;; esac; done
+case $1 in
+identity) echo "start $2" >>"$d/log"; sleep 0.4; echo "end $2" >>"$d/log"; ! grep -qx "$2" "$d/fail" ;;
+worker) echo "worker $3" >>"$d/log" ;;
+esac
+EOF
+    chmod +x "$t/$1/cli"
+  }
+  # <case dir> <count> <prefix> <parallel>: the launcher's status, then its
+  # peak of setups at once, the workers started, and how many started before
+  # their own setup ended.
+  launch() {
+    local rc i
+    AGICHAN_CLI="$t/$1/cli" crew_workers_start "$2" lead cat "$3" "$t/src" 0 60 5 "$4" >"$t/$1/out" 2>&1
+    rc=$?
+    [ "$rc" = 2 ] || for i in $(seq 1 30); do [ "$(grep -c '^worker' "$t/$1/log")" -ge "$(($2 - $(grep -c . "$t/$1/fail")))" ] && break; sleep 0.1; done
+    echo "rc=$rc peak=$(awk '/^start/ { n++; if (n > m) m = n } /^end/ { n-- } END { print m + 0 }' "$t/$1/log")" \
+      "workers=$(grep '^worker' "$t/$1/log" | cut -d' ' -f2 | sort | tr '\n' ,)" \
+      "early=$(awk '/^end/ { e[$2] = 1 } /^worker/ && !($2 in e) { n++ } END { print n + 0 }' "$t/$1/log")"
+  }
+  mkcli sa && printf 'sw-3\nsw-5\n' >"$t/sa/fail"
+  ck "workers are set up <parallel> at a time; failed setups, in a full batch and the last, are not started and the rest are" \
+    "$(launch sa 5 sw 2)" "rc=1 peak=2 workers=sw-1,sw-2,sw-4, early=0"
+  ck "and each failed one is named" "$(grep -c 'could not set up @sw-[35] ' "$t/sa/out")" 2
+  mkcli sb
+  ck "--parallel 1 sets them up one at a time" "$(launch sb 3 sv 1)" "rc=0 peak=1 workers=sv-1,sv-2,sv-3, early=0"
+  mkcli sc
+  ck "--parallel is 1 to 8: the sponsor's chat commands wait at most 60 s on its lock" \
+    "$(launch sc 2 su 9) $(grep -c 'takes 1 to 8' "$t/sc/out")" "rc=2 peak=0 workers= early=0 1"
 
   # The roster.
   out=$(crew_roster '{"tasks":[{"id":"t1","state":"claimed","owner":"w1","creator":"lead","title":"a","assigned_ms":1000},
