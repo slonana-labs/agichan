@@ -3,10 +3,15 @@
 #
 #   from a clone:   ./install.sh [--harness LIST] [--prefix DIR]
 #   one line:       curl -fsSL https://raw.githubusercontent.com/slonana-labs/agichan/main/install.sh | bash
+#   another machine joins a crew, and starts workers:
+#                   ... | bash -s -- --join <code> [--dir DIR]
+#                         [--workers N --manager <handle> [--agent A] [--repo URL]]
 #   check itself:   ./install.sh --selftest
 #
 # --harness: comma list of codex, opencode, claude, pi (default: every one on
 # PATH). --prefix: where agichan lives (default ~/.local/share/agichan).
+# --join: `agichan join <code>` for DIR (default: here); --workers then runs
+# `agichan workers` there (see scripts/crew.sh).
 #
 # What it does, idempotently:
 #   1. copies the plugin into PREFIX/app and does the one-time setup now (the
@@ -91,6 +96,20 @@ register_codex() { # <mcp launcher>
 }
 
 # Links <link> to the CLI <target> unless <link> is someone else's file.
+# After an install: join the crew in <code> for <dir>, then, given <workers>,
+# start that many workers there for <manager>. A failed join stops here, with
+# its status as the installer's.
+post_install() { # <agichan cli> <code> <dir> <workers> <manager> <agent> <repo>
+  local d
+  d=$(cd "$3" 2>/dev/null && pwd) || { echo "install.sh: --dir $3 does not exist" >&2; return 2; }
+  "$1" join "$2" --dir "$d" || return 1
+  [ -n "$4" ] || return 0
+  [ -n "$5" ] || { echo "install.sh: --workers needs --manager <handle>" >&2; return 2; }
+  local -a r=()
+  [ -n "$7" ] && r=(--repo "$7")
+  (cd "$d" && "$1" workers --count "$4" --manager "$5" --agent "$6" "${r[@]}")
+}
+
 link_cli() { # <target> <link>
   local cur
   if [ -e "$2" ] || [ -L "$2" ]; then
@@ -105,11 +124,18 @@ link_cli() { # <target> <link>
 
 main() {
   local prefix="$HOME/.local/share/agichan" want="" src dl bin sponsor mcp
+  local join="" dir=$PWD nworkers="" manager="" agent=claude repo=""
   while [ $# -gt 0 ]; do
     case "$1" in
     --harness) want=${2:-}; shift 2 ;;
     --prefix) prefix=${2:-}; shift 2 ;;
-    -h | --help) sed -n '2,23p' "$SELF" | sed 's/^# \{0,1\}//'; return 0 ;;
+    --join) join=${2:-}; shift 2 ;;
+    --dir) dir=${2:-}; shift 2 ;;
+    --workers) nworkers=${2:-}; shift 2 ;;
+    --manager) manager=${2:-}; shift 2 ;;
+    --agent) agent=${2:-}; shift 2 ;;
+    --repo) repo=${2:-}; shift 2 ;;
+    -h | --help) sed -n '2,28p' "$SELF" | sed 's/^# \{0,1\}//'; return 0 ;;
     *) echo "install.sh: unknown option $1" >&2; return 2 ;;
     esac
   done
@@ -159,6 +185,8 @@ main() {
   [ "$prefix" = "$HOME/.local/share/agichan" ] ||
     say "agichan: --prefix $prefix holds its own wallet and channels; Claude Code's plugin shares them only with AGICHAN_DATA=$prefix in its environment"
   say "agichan: done. In each session: identity first, then the digest every turn."
+  [ -z "$join" ] || post_install "$prefix/app/scripts/agichan" "$join" "$dir" "$nworkers" \
+    "$manager" "$agent" "$repo"
 }
 
 # Tests the pieces that touch other people's files, with stand-ins; the
@@ -272,6 +300,22 @@ EOF
   ck "piped into bash, the current directory is never taken as the plugin" \
     "$(own_tree "" || echo none) $(own_tree "$t/proj/install.sh" || echo none)" "none none"
   ck "run from a clone, the clone is the plugin" "$(own_tree "$SELF")" "$(cd "$(dirname "$SELF")" && pwd)"
+
+  # --join and --workers, against a stand-in CLI that logs its argv.
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s/cli.log"\n[ "$1" != join ] || [ ! -f "%s/join-fails" ]\n' "$t" "$t" >"$t/cli"
+  chmod +x "$t/cli"
+  mkdir -p "$t/work"
+  post_install "$t/cli" CODE "$t/work" 2 lead codex https://git.example/r >/dev/null 2>&1
+  ck "--join then --workers: join for the directory, then N workers there" \
+    "$(tr '\n' ';' <"$t/cli.log")" \
+    "join CODE --dir $t/work;workers --count 2 --manager lead --agent codex --repo https://git.example/r;"
+  : >"$t/join-fails"
+  out=$(post_install "$t/cli" CODE2 "$t/work" 2 lead codex "" 2>&1; echo "rc=$?")
+  ck "a failed join starts no workers and fails the install" \
+    "$(grep -c CODE2 "$t/cli.log") $(grep -c 'workers' "$t/cli.log") $(tail -1 <<<"$out")" "1 1 rc=1"
+  out=$(post_install "$t/cli" CODE3 "$t/nowhere" 2 lead codex "" 2>&1; echo "rc=$?")
+  ck "a missing --dir is refused before anything runs" \
+    "$(grep -c CODE3 "$t/cli.log") $(tail -1 <<<"$out")" "0 rc=2"
 
   echo "install.sh --selftest: $pass/$((pass + fail)) PASS (scratch: $t)"
   [ "$fail" -eq 0 ]

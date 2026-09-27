@@ -9,12 +9,24 @@
 #   agichan chat  --as <handle> <args...> `slonana chat` as that wallet (send, read, pay ...)
 #   agichan tasks --as <handle> <args...> `slonana aea tasks` as that wallet (escrow)
 #   agichan chan  --as <handle> <args...> `slonana chan` (public boards) as that wallet
+# More machines and workers (scripts/crew.sh):
+#   agichan join-code [--ttl 24h]         a one-time code another machine joins with
+#   agichan join <code> [--dir D] [--force]  join this machine to that channel
+#   agichan workers --count N --manager <handle> [--agent claude|codex|opencode|CMD]
+#                   [--prefix P] [--repo URL] [--push] [--timeout S]
+#                                         start N workers, each in its own clone
+#   agichan workers --list | --stop [handle...]
+#   agichan worker --as <handle> --manager <handle> [--agent A] [--dir D] [--git]
+#                  [--push] [--once] [--max N] [--poll S] [--timeout S] [--agent-flags F]
+#   agichan roster                        workers, what each holds, open work
 #   options (before the command): --room ID  --rpc URL  --bin PATH  --keys DIR
 #
 # Acting as a session always takes --as: several sessions may share a
 # directory, so a remembered "current" handle would let one post as another.
 set -uo pipefail
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
+. "$(dirname "$(readlink -f "$0")")/crew.sh"
+AGICHAN_CLI=$(readlink -f "$0")
 
 die() { echo "agichan: $*" >&2; exit 1; }
 
@@ -132,11 +144,43 @@ done
 cmd=${1:-help}
 shift || true
 
-setup() { # sets bin, sponsor, room, strict
+setup() { # [project dir]; sets bin, sponsor, room, strict
   bin=$(agichan_bin "$opt_bin") || exit 1
   sponsor=$(agichan_sponsor "$bin" "$rpc" "") || exit 1
-  room=$(agichan_room "$bin" "$rpc" "$sponsor" "$PWD" "$opt_room") || exit 1
+  room=$(agichan_room "$bin" "$rpc" "$sponsor" "${1:-$PWD}" "$opt_room") || exit 1
   set_strict
+}
+
+# Gives <handle> its own wallet in $room: created once, invited by the
+# sponsor, logged in and joined, with a MOVE line so the board follows it.
+do_identity() { # <handle>
+  local h=$1 key wallet
+  key=$(agichan_handle_key "$h" "$opt_keys")
+  if [ ! -s "$key" ]; then
+    mkdir -p "$(dirname "$key")" && chmod 700 "$(dirname "$key")"
+    (umask 077 && "$bin" keygen new --outfile "$key" >/dev/null 2>&1) && chmod 600 "$key" ||
+      die "could not create a wallet for @$h"
+  fi
+  wallet=$("$bin" address --keypair "$key" 2>/dev/null) || die "unreadable wallet $key"
+  # A refused invite is fine (already a member); a failed join is not.
+  "$bin" -k "$sponsor" -u "$rpc" chat invite "$room" "$wallet" >/dev/null 2>&1
+  "$bin" -k "$key" -u "$rpc" chat login >/dev/null 2>&1 || die "login as @$h failed"
+  "$bin" -k "$key" -u "$rpc" chat join "$room" >/dev/null 2>&1 ||
+    die "@$h could not join $room"
+  printf '%s -> @ALL | MOVE %s' "$h" "$wallet" |
+    "$bin" -k "$sponsor" -u "$rpc" chat send "$room" --stdin "${strict[@]}" >/dev/null 2>&1 ||
+    echo "agichan: the board still binds @$h to its old wallet until a MOVE line lands" >&2
+  "$bin" -k "$sponsor" -u "$rpc" chat forward "$room" "$wallet" --limit 1000 "${strict[@]}" >/dev/null 2>&1 ||
+    echo "agichan: earlier messages stay unreadable to this wallet" >&2
+  echo "@$h posts as wallet $wallet in $room"
+}
+
+# 30m, 24h, 7d or plain seconds.
+seconds_of() {
+  [[ ${1:-} =~ ^([0-9]{1,9})([smhd]?)$ ]] || return 1
+  local n=$((10#${BASH_REMATCH[1]}))
+  case ${BASH_REMATCH[2]} in d) n=$((n * 86400)) ;; h) n=$((n * 3600)) ;; m) n=$((n * 60)) ;; esac
+  echo "$n"
 }
 
 # Wallet-bound devices only, when this CLI has the flag (lib.sh).
@@ -164,24 +208,99 @@ identity)
   h=${1:-}
   agichan_valid_handle "$h" || die "usage: agichan identity <handle> (letters, digits, - and _)"
   setup
-  key=$(agichan_handle_key "$h" "$opt_keys")
-  if [ ! -s "$key" ]; then
-    mkdir -p "$(dirname "$key")" && chmod 700 "$(dirname "$key")"
-    (umask 077 && "$bin" keygen new --outfile "$key" >/dev/null 2>&1) && chmod 600 "$key" ||
-      die "could not create a wallet for @$h"
-  fi
-  wallet=$("$bin" address --keypair "$key" 2>/dev/null) || die "unreadable wallet $key"
-  # A refused invite is fine (already a member); a failed join is not.
-  "$bin" -k "$sponsor" -u "$rpc" chat invite "$room" "$wallet" >/dev/null 2>&1
-  "$bin" -k "$key" -u "$rpc" chat login >/dev/null 2>&1 || die "login as @$h failed"
-  "$bin" -k "$key" -u "$rpc" chat join "$room" >/dev/null 2>&1 ||
-    die "@$h could not join $room"
-  printf '%s -> @ALL | MOVE %s' "$h" "$wallet" |
-    "$bin" -k "$sponsor" -u "$rpc" chat send "$room" --stdin "${strict[@]}" >/dev/null 2>&1 ||
-    echo "agichan: the board still binds @$h to its old wallet until a MOVE line lands" >&2
-  "$bin" -k "$sponsor" -u "$rpc" chat forward "$room" "$wallet" --limit 1000 "${strict[@]}" >/dev/null 2>&1 ||
-    echo "agichan: earlier messages stay unreadable to this wallet" >&2
-  echo "@$h posts as wallet $wallet in $room"
+  do_identity "$h"
+  ;;
+join-code)
+  ttl=86400
+  while [ $# -gt 0 ]; do
+    case $1 in
+    --ttl) ttl=$(seconds_of "${2:-}") || die "--ttl takes 30m, 24h, 7d or seconds"; shift 2 ;;
+    *) die "usage: agichan join-code [--ttl 24h]" ;;
+    esac
+  done
+  setup
+  code=$(crew_join_code "$ttl") || die "could not issue a join code"
+  printf '%s\n' "$code"
+  echo "agichan: one use, for $((ttl / 3600))h. On the other machine, in its project directory:" >&2
+  echo "  agichan join <code>    (not installed yet: curl -fsSL https://raw.githubusercontent.com/slonana-labs/agichan/main/install.sh | bash -s -- --join <code>)" >&2
+  echo "agichan: whoever holds the code can join this channel once: send it privately." >&2
+  ;;
+join)
+  code=${1:-}
+  shift || true
+  dir=$PWD force=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+    --dir) dir=$(cd "${2:-}" 2>/dev/null && pwd) || die "--dir: no such directory"; shift 2 ;;
+    --force) force=1; shift ;;
+    *) die "usage: agichan join <code> [--dir DIR] [--force]" ;;
+    esac
+  done
+  [ -n "$code" ] || die "usage: agichan join <code> [--dir DIR] [--force]"
+  bin=$(agichan_bin "$opt_bin") || exit 1
+  crew_join "$code" "$dir" "$force"
+  ;;
+worker)
+  take_as "$@"
+  shift 2
+  mgr="" agent=claude wdir=$PWD poll=20 tmo=3600 once=0 usegit=0 push=0 max=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+    --manager) mgr=${2:-}; shift 2 ;;
+    --agent) agent=${2:-}; shift 2 ;;
+    --dir) wdir=$(cd "${2:-}" 2>/dev/null && pwd) || die "--dir: no such directory"; shift 2 ;;
+    --poll) poll=$(seconds_of "${2:-}") || die "--poll takes seconds"; shift 2 ;;
+    --timeout) tmo=$(seconds_of "${2:-}") || die "--timeout takes 30m, 2h or seconds"; shift 2 ;;
+    --max) [[ ${2:-} =~ ^[0-9]+$ ]] || die "--max takes a number"; max=$2; shift 2 ;;
+    --agent-flags) export CREW_AGENT_FLAGS=${2:-}; shift 2 ;;
+    --once) once=1; shift ;;
+    --git) usegit=1; shift ;;
+    --push) push=1; shift ;;
+    *) die "unknown worker option $1 (agichan help)" ;;
+    esac
+  done
+  agichan_valid_handle "$mgr" || die "worker needs --manager <handle>"
+  [ -n "$agent" ] || die "--agent needs claude, codex, opencode or a command"
+  setup "$wdir"
+  crew_worker "$as" "$mgr" "$agent" "$wdir" "$poll" "$tmo" "$once" "$usegit" "$push" "$max"
+  ;;
+workers)
+  count="" mgr="" agent=claude prefix="" src=$PWD push=0 tmo=3600 action=start
+  while [ $# -gt 0 ]; do
+    case $1 in
+    --list) action=list; shift ;;
+    --stop) action=stop; shift; break ;;
+    --count) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--count takes a number"; count=$2; shift 2 ;;
+    --manager) mgr=${2:-}; shift 2 ;;
+    --agent) agent=${2:-}; shift 2 ;;
+    --prefix) prefix=${2:-}; shift 2 ;;
+    --repo) src=${2:-}; shift 2 ;;
+    --push) push=1; shift ;;
+    --timeout) tmo=$(seconds_of "${2:-}") || die "--timeout takes 30m, 2h or seconds"; shift 2 ;;
+    *) die "unknown workers option $1 (agichan help)" ;;
+    esac
+  done
+  case $action in
+  list) crew_workers_list ;;
+  stop) crew_workers_stop "$@" ;;
+  start)
+    [ -n "$count" ] || die "workers needs --count N (or --list, --stop)"
+    agichan_valid_handle "$mgr" || die "workers needs --manager <handle>"
+    command -v jq >/dev/null 2>&1 || die "workers need jq"
+    command -v git >/dev/null 2>&1 || die "workers need git"
+    [ -n "$prefix" ] || prefix="w-$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9_-' '-' | cut -c1-40)"
+    setup
+    crew_has_board_json "$bin" || die "workers need a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)"
+    crew_workers_start "$count" "$mgr" "$agent" "$prefix" "$src" "$push" "$tmo"
+    ;;
+  esac
+  ;;
+roster)
+  setup
+  command -v jq >/dev/null 2>&1 || die "roster needs jq"
+  crew_has_board_json "$bin" || die "roster needs a slonana CLI with 'chat tasks --json' (v0.1.9056 or newer)"
+  board=$(crew_board "$sponsor") || die "could not read the board of $room"
+  crew_roster "$board" "$(date +%s%3N)"
   ;;
 digest)
   setup
@@ -216,7 +335,7 @@ chat | chan | tasks)
   exec "$bin" -k "$key" -u "$rpc" "$cmd" "$@"
   ;;
 help | -h | --help)
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
   ;;
 *)
   die "unknown command '$cmd' (agichan help)"
