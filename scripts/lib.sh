@@ -51,7 +51,9 @@ board_filter() {
 # Where a handle's own wallet lives: the path mcp-chat's chat_identity uses,
 # so a session is the same identity whether it talks MCP or the CLI.
 agichan_handle_key() { printf '%s' "$HOME/.config/slonana/aexchat/agents/$1.json"; }
-agichan_valid_handle() { [[ $1 =~ ^[A-Za-z0-9_-]{1,64}$ ]]; } # = is_chat_handle
+# = is_chat_handle (a letter or digit first: a handle reaches argv), and not
+# ALL, which addresses everyone.
+agichan_valid_handle() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] && [ "$1" != ALL ]; }
 
 # base58 (bitcoin alphabet) -> lowercase hex.
 agichan_b58_hex() {

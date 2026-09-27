@@ -82,6 +82,9 @@ EOF
   ck "a handle with no wallet is refused" "$(grep -c 'no wallet for @nobody' <<<"$out")" 1
   out=$(run identity 'bad name!' 2>&1)
   ck "a malformed handle is refused" "$(grep -c 'usage: agichan identity' <<<"$out")" 1
+  out=$(run identity -k 2>&1; run identity ALL 2>&1)
+  ck "a handle starting with '-' (a flag on argv) and ALL (everyone) are refused" \
+    "$(grep -c 'usage: agichan identity' <<<"$out")" 2
 
   : >"$tmp/calls.log"
   out=$(run digest --as me)
