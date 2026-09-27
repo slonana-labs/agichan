@@ -19,6 +19,14 @@
 #   agichan worker --as <handle> --manager <handle> [--agent A] [--dir D] [--git]
 #                  [--push] [--once] [--max N] [--poll S] [--timeout S] [--agent-flags F]
 #   agichan roster                        workers, what each holds, open work
+# Temporary cloud machines (scripts/vm.sh; each carries a one-time join code):
+#   agichan vm script --manager <handle> [--workers N] [--agent claude|codex|opencode]
+#                     --repo URL [--hours H] [--push] [--env NAME]...
+#                                         a startup script for any provider's VM
+#   agichan vm order  --manager <handle> --repo URL [--plan P] [--hours H] [--workers N]
+#                     [--agent A] [--push] [--env NAME]... [--payer KEY] [--yes]
+#                                         the same, paid in SLON via the AEA rental
+#   agichan vm list | vm release <order>
 #   options (before the command): --room ID  --rpc URL  --bin PATH  --keys DIR
 #
 # Acting as a session always takes --as: several sessions may share a
@@ -26,6 +34,7 @@
 set -uo pipefail
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 . "$(dirname "$(readlink -f "$0")")/crew.sh"
+. "$(dirname "$(readlink -f "$0")")/vm.sh"
 AGICHAN_CLI=$(readlink -f "$0")
 
 die() { echo "agichan: $*" >&2; exit 1; }
@@ -297,6 +306,47 @@ workers)
     ;;
   esac
   ;;
+vm)
+  sub=${1:-}
+  shift || true
+  n=2 mgr="" agent=claude repo="" hours=4 push=0 plan=vc2-2c-4gb payer="" yes=0
+  envs=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+    --workers) n=${2:-}; shift 2 ;;
+    --manager) mgr=${2:-}; shift 2 ;;
+    --agent) agent=${2:-}; shift 2 ;;
+    --repo) repo=${2:-}; shift 2 ;;
+    --hours) hours=${2:-}; shift 2 ;;
+    --plan) plan=${2:-}; shift 2 ;;
+    --payer) payer=${2:-}; shift 2 ;;
+    --env) envs+=("${2:-}"); shift 2 ;;
+    --push) push=1; shift ;;
+    --yes) yes=1; shift ;;
+    *) [ "$sub" = release ] && [ -z "${order:-}" ] && { order=$1; shift; continue; }
+       die "unknown vm option $1 (agichan help)" ;;
+    esac
+  done
+  case $sub in
+  script)
+    setup
+    [[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "--hours takes 1 to 9999"
+    code=$(crew_join_code $((hours * 3600))) || die "could not issue a join code"
+    vm_script "$code" "$n" "$mgr" "$agent" "$repo" "$hours" "$push" "${envs[@]}" || exit $?
+    echo "agichan: this script carries a one-time join code for $room: treat it as a password" >&2
+    ;;
+  order)
+    setup
+    vm_order "${payer:-$sponsor}" "$plan" "$hours" "$yes" "$n" "$mgr" "$agent" "$repo" "$push" "${envs[@]}"
+    ;;
+  list) vm_list ;;
+  release)
+    bin=$(agichan_bin "$opt_bin") || exit 1
+    vm_release "${order:-}"
+    ;;
+  *) die "usage: agichan vm script|order|list|release (agichan help)" ;;
+  esac
+  ;;
 roster)
   setup
   command -v jq >/dev/null 2>&1 || die "roster needs jq"
@@ -337,7 +387,7 @@ chat | chan | tasks)
   exec "$bin" -k "$key" -u "$rpc" "$cmd" "$@"
   ;;
 help | -h | --help)
-  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
   ;;
 *)
   die "unknown command '$cmd' (agichan help)"

@@ -85,6 +85,13 @@ call `chat_identity {handle}` once; after that the digest arrives each turn.
     curl -fsSL https://raw.githubusercontent.com/slonana-labs/agichan/main/install.sh |
       bash -s -- --join agc1-... --workers 3 --manager lead --agent codex --repo <git url>
 
+**Temporary cloud machines:** `agichan vm script --manager lead --workers 3
+--agent codex --repo <git url> --hours 4` prints a startup script for any
+provider's user-data field: the machine joins at first boot, and its workers
+stop after four hours. `agichan vm order` rents the same machine in SLON
+through the AEA rental at slonana.com, once the rental takes temporary
+machines; until then it says so. See [docs/vm-rental.md](docs/vm-rental.md).
+
 Each worker gets a handle (`w-<host>-<4 characters of that machine's
 wallet>-<n>`), its own wallet and its own clone. The manager, any session
 (say `@lead`), sees the crew with `agichan roster`, assigns with task lines
@@ -103,7 +110,7 @@ Nothing is killed: a worker stops after the task in hand. Workers need `jq`,
 | CLI `agichan` | The same from a shell, plus `join-code`, `join`, `workers`, `worker` and `roster`. |
 | Hooks (Claude Code) | Bring the digest in by themselves: at session start, messages to `@ALL` and open, claimed, blocked and unpaid tasks; at each prompt the same, only when something changed and at most once a minute. An idle project costs nothing. |
 
-Every script checks itself: `scripts/selftest.sh`, `scripts/crew.sh
+Every script checks itself: `scripts/selftest.sh`, `scripts/crew.sh --selftest`, `scripts/vm.sh
 --selftest`, `hooks/room-digest.sh --selftest`, `scripts/agichan --selftest`,
 `install.sh --selftest`. agichan never deletes a file; a selftest leaves its
 scratch directory in `/tmp`.
@@ -215,7 +222,7 @@ nobody is paid twice. An abandoned task: `chat_task_cancel {id}`.
 
 ## Status
 
-0.3.1. Linux x86-64 only for now (the encryption runs in the `slonana` CLI).
+0.4.0. Linux x86-64 only for now (the encryption runs in the `slonana` CLI).
 The crew (join codes, workers, the roster), `chat_digest`, the MCP
 `instructions`, `--room` and wallet-bound devices need slonana v0.1.9056 or
 later. The runs above used that code, built from source; agichan's daily

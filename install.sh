@@ -5,7 +5,7 @@
 #   one line:       curl -fsSL https://raw.githubusercontent.com/slonana-labs/agichan/main/install.sh | bash
 #   another machine joins a crew, and starts workers:
 #                   ... | bash -s -- --join <code> [--dir DIR]
-#                         [--workers N --manager <handle> [--agent A] [--repo URL]]
+#                         [--workers N --manager <handle> [--agent A] [--repo URL] [--push]]
 #   check itself:   ./install.sh --selftest
 #
 # --harness: comma list of codex, opencode, claude, pi (default: every one on
@@ -99,7 +99,7 @@ register_codex() { # <mcp launcher>
 # After an install: join the crew in <code> for <dir>, then, given <workers>,
 # start that many workers there for <manager>. A failed join stops here, with
 # its status as the installer's.
-post_install() { # <agichan cli> <code> <dir> <workers> <manager> <agent> <repo>
+post_install() { # <agichan cli> <code> <dir> <workers> <manager> <agent> <repo> [push: 0|1]
   local d
   d=$(cd "$3" 2>/dev/null && pwd) || { echo "install.sh: --dir $3 does not exist" >&2; return 2; }
   "$1" join "$2" --dir "$d" || return 1
@@ -107,6 +107,7 @@ post_install() { # <agichan cli> <code> <dir> <workers> <manager> <agent> <repo>
   [ -n "$5" ] || { echo "install.sh: --workers needs --manager <handle>" >&2; return 2; }
   local -a r=()
   [ -n "$7" ] && r=(--repo "$7")
+  [ "${8:-0}" = 1 ] && r+=(--push)
   (cd "$d" && "$1" workers --count "$4" --manager "$5" --agent "$6" "${r[@]}")
 }
 
@@ -124,7 +125,7 @@ link_cli() { # <target> <link>
 
 main() {
   local prefix="$HOME/.local/share/agichan" want="" src dl bin sponsor mcp
-  local join="" dir=$PWD nworkers="" manager="" agent=claude repo=""
+  local join="" dir=$PWD nworkers="" manager="" agent=claude repo="" push=0
   while [ $# -gt 0 ]; do
     case "$1" in
     --harness) want=${2:-}; shift 2 ;;
@@ -135,6 +136,7 @@ main() {
     --manager) manager=${2:-}; shift 2 ;;
     --agent) agent=${2:-}; shift 2 ;;
     --repo) repo=${2:-}; shift 2 ;;
+    --push) push=1; shift ;;
     -h | --help) sed -n '2,28p' "$SELF" | sed 's/^# \{0,1\}//'; return 0 ;;
     *) echo "install.sh: unknown option $1" >&2; return 2 ;;
     esac
@@ -186,7 +188,7 @@ main() {
     say "agichan: --prefix $prefix holds its own wallet and channels; Claude Code's plugin shares them only with AGICHAN_DATA=$prefix in its environment"
   say "agichan: done. In each session: identity first, then the digest every turn."
   [ -z "$join" ] || post_install "$prefix/app/scripts/agichan" "$join" "$dir" "$nworkers" \
-    "$manager" "$agent" "$repo"
+    "$manager" "$agent" "$repo" "$push"
 }
 
 # Tests the pieces that touch other people's files, with stand-ins; the
@@ -309,10 +311,15 @@ EOF
   ck "--join then --workers: join for the directory, then N workers there" \
     "$(tr '\n' ';' <"$t/cli.log")" \
     "join CODE --dir $t/work;workers --count 2 --manager lead --agent codex --repo https://git.example/r;"
+  post_install "$t/cli" CODE4 "$t/work" 1 lead claude https://git.example/r 1 >/dev/null 2>&1
+  ck "--push reaches the workers (a VM's startup script passes it)" \
+    "$(tail -1 "$t/cli.log")" "workers --count 1 --manager lead --agent claude --repo https://git.example/r --push"
   : >"$t/join-fails"
+  local before
+  before=$(grep -c 'workers' "$t/cli.log")
   out=$(post_install "$t/cli" CODE2 "$t/work" 2 lead codex "" 2>&1; echo "rc=$?")
   ck "a failed join starts no workers and fails the install" \
-    "$(grep -c CODE2 "$t/cli.log") $(grep -c 'workers' "$t/cli.log") $(tail -1 <<<"$out")" "1 1 rc=1"
+    "$(grep -c CODE2 "$t/cli.log") $(($(grep -c 'workers' "$t/cli.log") - before)) $(tail -1 <<<"$out")" "1 0 rc=1"
   out=$(post_install "$t/cli" CODE3 "$t/nowhere" 2 lead codex "" 2>&1; echo "rc=$?")
   ck "a missing --dir is refused before anything runs" \
     "$(grep -c CODE3 "$t/cli.log") $(tail -1 <<<"$out")" "0 rc=2"
