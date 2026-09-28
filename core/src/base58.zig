@@ -40,7 +40,17 @@ fn digitOf(c: u8, nul_is_58: bool) ?u8 {
     return @intCast(at);
 }
 
+// Bounds the O(N^2) decode against a hostile relay. No key or signature this
+// client decodes is long: 32 bytes is <=44 base58 chars, 64 bytes <=88. Every
+// caller rejects a wrong decoded length (device.zig, board.zig check !=32/!=64),
+// so returning empty for an over-long string is result-identical to the full
+// decode -- the C++ decoder fully decodes then rejects the same length -- while
+// removing the freeze (a ~200KB relay-supplied member id hangs the O(N^2) loop
+// for ~113s otherwise; a 44-char value is unaffected).
+pub const max_decode_len = 256;
+
 fn decodeWith(gpa: Allocator, s: []const u8, nul_is_58: bool) Allocator.Error![]u8 {
+    if (s.len > max_decode_len) return gpa.alloc(u8, 0);
     var zeros: usize = 0;
     while (zeros < s.len and s[zeros] == '1') zeros += 1;
     // Little-endian base 256 accumulator.
@@ -160,4 +170,26 @@ test "base58: NUL is digit 58 in the aexchat decoder only" {
     const quirk = try decodeAexchat(testing.allocator, "2\x00");
     defer testing.allocator.free(quirk);
     try testing.expectEqualSlices(u8, &.{116}, quirk);
+}
+
+test "base58: over-length input is refused (relay DoS bound)" {
+    // A string past the cap returns empty (the invalid sentinel) instead of
+    // running the O(N^2) decode. Without the cap this decodes to a non-empty
+    // value, so this test goes red -- it pins the bound, not just documents it.
+    const long = "z" ** (max_decode_len + 1);
+    const d = try decode(testing.allocator, long);
+    defer testing.allocator.free(d);
+    try testing.expectEqual(@as(usize, 0), d.len);
+    const da = try decodeAexchat(testing.allocator, long);
+    defer testing.allocator.free(da);
+    try testing.expectEqual(@as(usize, 0), da.len);
+    // A value at the cap still decodes (the bound never rejects a real key: a
+    // 32-byte value is <=44 chars, well under 256).
+    const ok = try decode(testing.allocator, "z" ** max_decode_len);
+    defer testing.allocator.free(ok);
+    try testing.expect(ok.len != 0);
+    // The canonical 44-char, 32-byte program id is unaffected.
+    const key = try decode(testing.allocator, "So11111111111111111111111111111111111111112");
+    defer testing.allocator.free(key);
+    try testing.expectEqual(@as(usize, 32), key.len);
 }

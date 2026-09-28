@@ -32,6 +32,10 @@ pub fn challengeMessageOk(message: []const u8, nonce: []const u8) bool {
 pub fn challengeHost(message: []const u8) []const u8 {
     const head = "Sign in to ";
     const nl = std.mem.indexOfScalar(u8, message, '\n') orelse message.len;
+    // A message shorter than the prefix (or with a newline inside it) would make
+    // message[head.len..nl] panic (start > end). The caller gates this behind
+    // challengeMessageOk, so it is not reachable today; guard it anyway.
+    if (nl <= head.len) return message[0..0];
     return message[head.len..nl];
 }
 

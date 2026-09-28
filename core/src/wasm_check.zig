@@ -52,7 +52,10 @@ export fn agichan_run(
 ) u32 {
     var fba = std.heap.FixedBufferAllocator.init(&heap);
     const a = fba.allocator();
-    return run(a, @enumFromInt(cmd), state_ptr[0..state_len], kp_ptr[0..kp_len], room_ptr[0..room_len], text_ptr[0..text_len], out_ptr[0..out_cap]) catch 255;
+    // A host passing a cmd outside 0-4 would trap @enumFromInt; refuse it. The
+    // wasm host is trusted in the threat model, so this is defense in depth.
+    const command = std.meta.intToEnum(Command, cmd) catch return 255;
+    return run(a, command, state_ptr[0..state_len], kp_ptr[0..kp_len], room_ptr[0..room_len], text_ptr[0..text_len], out_ptr[0..out_cap]) catch 255;
 }
 
 fn run(a: Allocator, cmd: Command, state_text: []const u8, kp_text: []const u8, room: []const u8, text: []const u8, out_buf: []u8) !u32 {
