@@ -36,10 +36,13 @@
 # Acting as a session always takes --as: several sessions may share a
 # directory, so a remembered "current" handle would let one post as another.
 set -uo pipefail
-. "$(dirname "$(readlink -f "$0")")/lib.sh"
-. "$(dirname "$(readlink -f "$0")")/crew.sh"
-. "$(dirname "$(readlink -f "$0")")/vm.sh"
-AGICHAN_CLI=$(readlink -f "$0")
+# lib.sh's agichan_realpath, inline: install.sh reaches this file through a link.
+p=$0; while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac; done
+l=$(CDPATH='' cd -P "$(dirname "$p")" && pwd -P)
+AGICHAN_CLI=${l%/}/${p##*/}
+. "$l/lib.sh"
+. "$l/crew.sh"
+. "$l/vm.sh"
 
 die() { echo "agichan: $*" >&2; exit 1; }
 
@@ -47,6 +50,11 @@ die() { echo "agichan: $*" >&2; exit 1; }
 # check who acted and how; `read`/`tasks` answer from files. agichan deletes
 # nothing: the scratch dir stays in /tmp and is named at the end.
 selftest() {
+  # Run through links by the entry-point check at the end: say what was found.
+  if [ -n "${AGICHAN_SELFTEST_ENTRY:-}" ]; then
+    echo "$AGICHAN_CLI $(type -t agichan_data crew_join_code vm_script | tr '\n' ' ')"
+    return
+  fi
   local pass=0 fail=0 out tmp
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/agichan-selftest.XXXXXX") || return 2
   ck() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); echo "  ok   $1"; else
@@ -148,6 +156,21 @@ EOF
   echo 0 >"$tmp/strict"
   ck "with a CLI that has it, every call that seals or opens keys keeps to wallet-bound devices" \
     "$(grep -cE -- '(chat (send !r:x --stdin|forward !r:x W_me --limit 1000|read !r:x --limit 40 --mention me|tasks !r:x --limit 200) --bound-devices-only)\|' "$tmp/calls.log")" 5
+
+  # As ~/.local/bin/agichan runs it: through an absolute link to a relative one
+  # whose .. is taken in a linked directory (a logical .. lands in the decoy
+  # $e/sd); then as sd/agichan with CDPATH naming the decoy $e/decoy.
+  local here e=$tmp/entry
+  here=$(cd -P "$(dirname "$0")" && pwd -P)
+  mkdir -p "$e/ln/bin" "$e/ln/deep/er" "$e/sd" "$e/decoy/sd"
+  ln -s "$here" "$e/ln/sd"
+  ln -s "../../sd/${0##*/}" "$e/ln/deep/er/rel"
+  ln -s deep/er "$e/ln/d"
+  ln -s "$e/ln/d/rel" "$e/ln/bin/agichan"
+  ck "run through links, or by a relative path with CDPATH set, agichan finds its libraries and its own real path" \
+    "$(cd "$e/ln" && { AGICHAN_SELFTEST_ENTRY=1 bin/agichan --selftest 2>&1
+      CDPATH="$e/decoy" AGICHAN_SELFTEST_ENTRY=1 bash "sd/${0##*/}" --selftest 2>&1; } | tr '\n' '|')" \
+    "$here/${0##*/} function function function |$here/${0##*/} function function function |"
 
   echo "agichan --selftest: $pass/$((pass + fail)) PASS (scratch: $tmp)"
   [ "$fail" -eq 0 ]

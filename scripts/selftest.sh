@@ -231,5 +231,64 @@ CLAUDE_PLUGIN_DATA="$tmp/legacy" _agichan_sponsor "$tmp/kg/slonana" rpc "$tmp/ow
 ck "a data dir with its own sponsor keeps it and adopts no channels" \
   "$(cat "$tmp/own/sponsor.json") $(ls -A "$tmp/own" | grep -c rooms)" "[8] 0"
 
+# agichan_realpath: link chains, a .. taken in a linked directory (a logical ..
+# would miss), a bare name, CDPATH naming a decoy.
+r=$tmp/rp
+mkdir -p "$r/real/sub/deep" "$r/a" "$r/b" "$r/decoy/real/sub"
+: >"$r/real/sub/file"
+ln -s "$r/real/sub/file" "$r/a/abs"
+ln -s ../a/abs "$r/b/rel"
+ln -s ../file "$r/real/sub/deep/up"
+ln -s real/sub/deep "$r/dl"
+rp_cases() { # <resolver...>: its answers, |-separated
+  printf '%s|' "$("$@" "$r/b/rel")" "$("$@" "$r/dl/up")" "$(cd "$r/b" && "$@" rel)" \
+    "$(cd "$r" && CDPATH="$r/decoy" "$@" real/sub/file)"
+}
+R=$(cd -P "$r" && pwd -P)/real/sub/file
+ck "agichan_realpath: link chains, .. in a linked directory, a bare name, CDPATH set" \
+  "$(rp_cases agichan_realpath)" "$R|$R|$R|$R|"
+if readlink -f / >/dev/null 2>&1; then
+  ck "and it answers as readlink -f does" "$(rp_cases agichan_realpath)" "$(rp_cases readlink -f)"
+else
+  echo "  skip: no readlink -f here to compare with"
+fi
+L=$(cd -P "$(dirname "$0")" && pwd -P)/lib.sh
+ln -s "$L" "$r/a/lib"
+ln -s ../a/lib "$r/b/lib"
+ck "lib.sh sourced through links knows its real path (AGICHAN_LIB, which detached jobs source)" \
+  "$(cd "$r" && bash -c '. "$1"; printf %s "$AGICHAN_LIB"' _ b/lib)" "$L"
+
+# agichan_spawn's job waits for the go file (a spawn that waited on it would see
+# none), then reports its stdin, SIGHUP and session. No setsid on PATH = macOS.
+sp=$tmp/sp
+mkdir -p "$sp/nosetsid"
+for c in bash nohup ps sleep tr; do ln -s "$(command -v "$c")" "$sp/nosetsid/$c"; done
+cat >"$sp/job" <<'EOF'
+#!/usr/bin/env bash
+for ((i = 0; i < 100; i++)); do [ -e "$1" ] && break; sleep 0.1; done
+IFS= read -r -t 1 in || :
+ign=$(ps -o sigignore= -p $$ 2>/dev/null | tr -d ' ')
+case $ign in *[13579bdfBDF]) hup=ignored ;; *) hup=default ;; esac
+sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ') # macOS ps has no sid: never "own"
+echo "go=$([ -e "$1" ] && echo seen || echo missed) in=$in hup=$hup session=$([ "$sid" = $$ ] && echo own || echo shared)"
+echo "and stderr" >&2
+EOF
+chmod +x "$sp/job"
+spawned() { # <name> [PATH]: its log, |-separated, after the job ran
+  echo earlier >"$sp/$1.log"
+  # Stdin given to a subshell: bash passes it on to a job started with & there.
+  (PATH=${2:-$PATH} agichan_spawn "$sp/$1.log" "$sp/job" "$sp/$1.go") <<<"typed at the terminal"
+  : >"$sp/$1.go"
+  for _ in $(seq 1 120); do grep -q 'and stderr' "$sp/$1.log" && break; sleep 0.1; done
+  tr '\n' '|' <"$sp/$1.log"
+}
+ck "without setsid (macOS) agichan_spawn uses nohup: SIGHUP ignored (this shell's is not), stdin /dev/null, output appended, no wait" \
+  "$(spawned n "$sp/nosetsid") $("$sp/job" "$sp/n.go" </dev/null 2>&1 | tr '\n' '|')" \
+  "earlier|go=seen in= hup=ignored session=shared|and stderr| go=seen in= hup=default session=shared|and stderr|"
+own=own
+command -v setsid >/dev/null 2>&1 || own=shared
+ck "with setsid (Linux) the job has a session of its own, as before" \
+  "$(spawned s | sed 's/ hup=[a-z]*//')" "earlier|go=seen in= session=$own|and stderr|"
+
 echo "agichan lib --selftest: $pass/$((pass + fail)) PASS (scratch: $tmp)"
 [ "$fail" -eq 0 ]

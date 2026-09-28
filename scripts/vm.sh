@@ -168,6 +168,8 @@ vm_release() { # <order>
 # ---- self-test --------------------------------------------------------------------------
 
 vm_selftest() {
+  # Run through links by the entry-point check at the end: say what was found.
+  if [ -n "${AGICHAN_SELFTEST_ENTRY:-}" ]; then type -t agichan_data crew_join_code | tr '\n' ' '; return; fi
   local pass=0 fail=0 t out s
   t=$(mktemp -d "${TMPDIR:-/tmp}/agichan-selftest.XXXXXX") || return 2
   command -v jq >/dev/null 2>&1 || { echo "vm.sh --selftest: UNMEASURED: needs jq"; return 2; }
@@ -254,13 +256,31 @@ EOF
   ck "an unknown or malformed order is refused" \
     "$(PATH="$t/rb:$PATH" vm_release nope 2>&1 | grep -c 'no order') $(PATH="$t/rb:$PATH" vm_release '../x' 2>&1 | grep -c usage)" "1 1"
 
+  # The entry point below, through an absolute link to a relative one whose ..
+  # is taken in a linked directory (a logical .. lands in the decoy $e/sd); then
+  # as sd/vm.sh with CDPATH naming the decoy $e/decoy.
+  local here e=$t/entry
+  here=$(cd -P "$(dirname "$0")" && pwd -P)
+  mkdir -p "$e/ln/bin" "$e/ln/deep/er" "$e/sd" "$e/decoy/sd"
+  ln -s "$here" "$e/ln/sd"
+  ln -s "../../sd/${0##*/}" "$e/ln/deep/er/rel"
+  ln -s deep/er "$e/ln/d"
+  ln -s "$e/ln/d/rel" "$e/ln/bin/vm"
+  ck "run through links, or by a relative path with CDPATH set, vm.sh --selftest finds lib.sh and crew.sh" \
+    "$(cd "$e/ln" && { AGICHAN_SELFTEST_ENTRY=1 bash bin/vm --selftest 2>&1
+      CDPATH="$e/decoy" AGICHAN_SELFTEST_ENTRY=1 bash "sd/${0##*/}" --selftest 2>&1; })" \
+    "function function function function "
+
   echo "vm --selftest: $pass/$((pass + fail)) PASS (scratch: $t)"
   [ "$fail" -eq 0 ]
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = --selftest ]; then
-  . "$(dirname "$(readlink -f "$0")")/lib.sh"
-  . "$(dirname "$(readlink -f "$0")")/crew.sh"
+  # lib.sh's agichan_realpath, inline: it is lib.sh that this finds.
+  p=$0; while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac; done
+  l=$(CDPATH='' cd -P "$(dirname "$p")" && pwd -P)
+  . "$l/lib.sh"
+  . "$l/crew.sh"
   vm_selftest
   exit $?
 fi

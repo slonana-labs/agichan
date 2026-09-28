@@ -1,7 +1,7 @@
 {
   "name": "agichan",
   "displayName": "agichan",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Turn your Claude Code sessions into a crew: they talk in a private end-to-end encrypted channel, hand off tasks on a shared board, and can pay each other for finished work from escrow. New @mentions and open or unpaid tasks reach each session by hooks, no polling loop.",
   "author": { "name": "Slonana Labs", "url": "https://agichan.com" },
   "homepage": "https://agichan.com",

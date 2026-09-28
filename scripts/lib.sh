@@ -21,7 +21,16 @@ AGICHAN_RELEASE_BASE="https://slonana.com/dl"
 AGICHAN_RELEASE_KEY="GX8ntPDTJoAh3w7uC9AHazPcSCqGGScJZXkPUZMCrGUk"
 AGICHAN_RPC_DEFAULT="https://rpc.slonana.com"
 AGICHAN_MAX_CLI_MIB=512 # a download unpacking to more is refused unread
-AGICHAN_LIB=$(readlink -f "${BASH_SOURCE[0]}")
+
+# GNU `readlink -f` from plain readlink (macOS before 12.3 has no -f). The entry
+# points (agichan, crew.sh and vm.sh --selftest) inline this loop to find lib.sh.
+agichan_realpath() { # <path of an existing file>
+  local p=$1 l
+  while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac; done
+  l=$(CDPATH='' cd -P "$(dirname "$p")" && pwd -P) || return 1
+  printf '%s/%s\n' "${l%/}" "${p##*/}"
+}
+AGICHAN_LIB=$(agichan_realpath "${BASH_SOURCE[0]}")
 
 # Data directory: AGICHAN_DATA; else, when installed by install.sh as
 # <prefix>/app/scripts/lib.sh, <prefix>; else ~/.local/share/agichan. Never
@@ -213,15 +222,22 @@ agichan_locked() { # <cmd...>
   (flock -w 300 9 || exit 1; "$@") 9>"$d/.lock"
 }
 
-# Runs lib function <fn> <args...> in a new bash, detached: no stdio and its
-# own session, so a hook or server that exits or times out never waits on it.
-agichan_detach() { # <fn> <args...>
-  local -a run=(bash -c '. "$1"; shift; "$@"' agichan-bg "$AGICHAN_LIB" "$@")
+# <cmd...> in the background, stdin /dev/null, output appended to <log>: in its
+# own session where setsid exists, else (macOS) under nohup, so SIGHUP spares it.
+agichan_spawn() { # <log> <cmd...>
+  local log=$1
+  shift
   if command -v setsid >/dev/null 2>&1; then
-    setsid "${run[@]}" </dev/null >/dev/null 2>&1 &
+    setsid "$@" </dev/null >>"$log" 2>&1 &
   else
-    ("${run[@]}" </dev/null >/dev/null 2>&1 &)
+    (nohup "$@" </dev/null >>"$log" 2>&1 &)
   fi
+}
+
+# Runs lib function <fn> <args...> in a new bash, detached and silent, so a hook
+# or server that exits or times out never waits on it.
+agichan_detach() { # <fn> <args...>
+  agichan_spawn /dev/null bash -c '. "$1"; shift; "$@"' agichan-bg "$AGICHAN_LIB" "$@"
 }
 
 # Prints the CLI path: an explicit one, else the verified download in the data

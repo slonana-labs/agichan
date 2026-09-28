@@ -384,11 +384,13 @@ crew_status() {
 # ---- many workers on one machine ----------------------------------------------
 
 # Whether the worker <handle> recorded in <pid file> is alive: its pid runs a
-# worker for that handle (a reused pid runs something else).
+# worker for that handle (a reused pid runs something else). /proc where it is
+# readable, else ps (macOS); CREW_PROC stands in for /proc in the selftest.
 crew_alive() { # <pid file> <handle>
   local pid c
   pid=$(cat "$1" 2>/dev/null) && [[ $pid =~ ^[0-9]+$ ]] || return 1
-  c=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline") || return 1
+  c=$(tr '\0' ' ' 2>/dev/null <"${CREW_PROC:-/proc}/$pid/cmdline") ||
+    c="$(ps -ww -o args= -p "$pid" 2>/dev/null) " || return 1
   [[ $c == *" worker --as $2 "* ]]
 }
 
@@ -449,8 +451,8 @@ crew_workers_start() { # <count> <mgr> <agent> <prefix> <src> <push: 0|1> <timeo
       failed=1
       continue
     fi
-    setsid "$AGICHAN_CLI" "${o[@]}" worker --as "$h" --manager "$2" --agent "$3" --dir "$data/work/$h" \
-      --git "${p[@]}" --timeout "$7" --poll "${8:-20}" </dev/null >>"$wd/$h.log" 2>&1 &
+    agichan_spawn "$wd/$h.log" "$AGICHAN_CLI" "${o[@]}" worker --as "$h" --manager "$2" --agent "$3" \
+      --dir "$data/work/$h" --git "${p[@]}" --timeout "$7" --poll "${8:-20}"
     echo "agichan: started @$h in $data/work/$h (log $wd/$h.log)"
   done
   return "$failed"
@@ -576,6 +578,8 @@ crew_share() { # <board json, as this machine's sponsor reads it> --missing | <h
 # ---- self-test -----------------------------------------------------------------------
 
 crew_selftest() {
+  # Run through links by the entry-point check at the end: say lib.sh was found.
+  if [ -n "${AGICHAN_SELFTEST_ENTRY:-}" ]; then type -t agichan_data; return; fi
   local pass=0 fail=0 t out code p k=0 n0=0
   t=$(mktemp -d "${TMPDIR:-/tmp}/agichan-selftest.XXXXXX") || return 2
   command -v jq >/dev/null 2>&1 || { echo "crew.sh --selftest: UNMEASURED: needs jq"; return 2; }
@@ -883,8 +887,9 @@ EOF
   ck "and the longest one is still a valid handle" "$(agichan_valid_handle "$p1" && echo yes)" yes
 
   # Starting workers. A stand-in agichan per case logs `start|end <handle>`
-  # around a 0.4 s setup and `worker <handle>` for a start; setups for the
-  # handles in its fail file fail.
+  # around a 0.4 s setup and, for a start, writes to its own output and then
+  # logs `worker <handle> in=<its stdin> hup=<SIGHUP> session=<own|shared>`;
+  # setups for the handles in its fail file fail.
   git init -q "$t/src" && git -C "$t/src" -c user.name=t -c user.email=t@x commit -q --allow-empty -m base
   mkcli() {
     mkdir -p "$t/$1" && : >"$t/$1/fail" && : >"$t/$1/warn" && : >>"$t/$1/log"
@@ -896,17 +901,23 @@ case $1 in
 identity) echo "start $2" >>"$d/log"; sleep 0.4; echo "end $2" >>"$d/log"
   if grep -qx "$2" "$d/warn"; then echo "agichan: @$2 cannot read messages from before it joined" >&2; fi
   ! grep -qx "$2" "$d/fail" ;;
-worker) echo "worker $3" >>"$d/log" ;;
+worker) IFS= read -r -t 2 in || :
+  echo "worker $3 says hi"; echo "worker $3 warns" >&2
+  ign=$(ps -o sigignore= -p $$ 2>/dev/null | tr -d ' '); sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')
+  case $ign in *[13579bdfBDF]) ign=ignored ;; *) ign=default ;; esac
+  echo "worker $3 in=$in hup=$ign session=$([ "$sid" = $$ ] && echo own || echo shared)" >>"$d/log" ;;
 esac
 EOF
     chmod +x "$t/$1/cli"
   }
-  # <case dir> <count> <prefix> <parallel>: the launcher's status, then its
-  # peak of setups at once, the workers started, and how many started before
-  # their own setup ended.
+  # <case dir> <count> <prefix> <parallel> [PATH]: the launcher's status, then
+  # its peak of setups at once, the workers started, and how many started
+  # before their own setup ended. The launcher's stdin holds a line no worker
+  # may read; given to a subshell, bash passes it on to jobs started there.
   launch() {
     local rc i
-    AGICHAN_CLI="$t/$1/cli" crew_workers_start "$2" lead cat "$3" "$t/src" 0 60 5 "$4" >"$t/$1/out" 2>&1
+    (PATH=${5:-$PATH} AGICHAN_CLI="$t/$1/cli" crew_workers_start "$2" lead cat "$3" "$t/src" 0 60 5 "$4") \
+      <<<"typed at the terminal" >"$t/$1/out" 2>&1
     rc=$?
     [ "$rc" = 2 ] || for i in $(seq 1 30); do [ "$(grep -c '^worker' "$t/$1/log")" -ge "$(($2 - $(grep -c . "$t/$1/fail")))" ] && break; sleep 0.1; done
     echo "rc=$rc peak=$(awk '/^start/ { n++; if (n > m) m = n } /^end/ { n-- } END { print m + 0 }' "$t/$1/log")" \
@@ -924,6 +935,47 @@ EOF
   mkcli sc
   ck "--parallel is 1 to 8: the sponsor's chat commands wait at most 60 s on its lock" \
     "$(launch sc 2 su 9) $(grep -c 'takes 1 to 8' "$t/sc/out")" "rc=2 peak=0 workers= early=0 1"
+  local own=own
+  command -v setsid >/dev/null 2>&1 || own=shared
+  ck "a worker starts in a session of its own where setsid exists (Linux, as before), stdin /dev/null, output in its log" \
+    "$(sed -n 's/^worker sv-1 in=\([^ ]*\) hup=[a-z]* /in=\1 /p' "$t/sb/log") $(grep -cE '^worker sv-1 (says hi|warns)$' "$AGICHAN_DATA/workers/sv-1.log")" \
+    "in= session=$own 2"
+  hup_of() { # <pid>: whether it ignores SIGHUP
+    case $(ps -o sigignore= -p "$1" 2>/dev/null | tr -d ' ') in *[13579bdfBDF]) echo ignored ;; *) echo default ;; esac
+  }
+  mkdir -p "$t/nosetsid" # a PATH with no setsid, as on macOS
+  for c in bash cat dirname git grep mkdir nohup ps sleep tr; do ln -s "$(command -v "$c")" "$t/nosetsid/$c"; done
+  mkcli sd
+  ck "without setsid (macOS) a worker still starts, under nohup: SIGHUP ignored (this shell's is not), stdin /dev/null, output in its log" \
+    "$(launch sd 1 sn 1 "$t/nosetsid") $(sed -n 's/^worker sn-1 //p' "$t/sd/log") $(grep -cE '^worker sn-1 (says hi|warns)$' "$AGICHAN_DATA/workers/sn-1.log") $(hup_of $$)" \
+    "rc=0 peak=1 workers=sn-1, early=0 in= hup=ignored session=shared 2 default"
+
+  # crew_alive, and what reads it, against a stand-in running worker whose
+  # command line ends in its handle; it ends itself on the test's stop file.
+  bash -c 'for ((i = 0; i < 300; i++)); do [ -e "$1" ] && exit 0; sleep 0.1; done' _ "$t/alive.stop" worker --as sx-1 &
+  echo "$!" >"$AGICHAN_DATA/workers/sx-1.pid"
+  echo "$$" >"$t/me.pid"
+  alive3() { # sx-1 itself, its pid as another handle, a pid running no worker
+    crew_alive "$AGICHAN_DATA/workers/sx-1.pid" sx-1 && printf 'alive ' || printf 'no '
+    crew_alive "$AGICHAN_DATA/workers/sx-1.pid" sx-2 && printf 'alive ' || printf 'no '
+    crew_alive "$t/me.pid" sx-1 && printf 'alive ' || printf 'no '
+  }
+  mkdir -p "$t/nops" && ln -s "$(command -v cat)" "$(command -v tr)" "$t/nops/"
+  local pp=$t/nops
+  [ -r "/proc/$$/cmdline" ] || pp=$PATH # no /proc (macOS): ps is how it knows
+  ck "crew_alive reads /proc where it is readable (no ps on PATH): a running worker is; its pid as another handle, or running something else, is not" \
+    "$(PATH=$pp alive3)" "alive no no "
+  mkdir -p "$t/psw" # a ps that notes each call, so the answers below are ps's
+  printf '#!/bin/sh\necho "$*" >>"%s/ps.calls"\nexec "%s" "$@"\n' "$t" "$(command -v ps)" >"$t/psw/ps"
+  chmod +x "$t/psw/ps"
+  ck "with no /proc (macOS) ps tells the same" \
+    "$(CREW_PROC=$t/noproc PATH="$t/psw:$PATH" alive3)$(grep -c -e '^-ww -o args= -p [0-9]*$' "$t/ps.calls")" "alive no no 3"
+  mkcli se
+  out=$(CREW_PROC=$t/noproc AGICHAN_CLI="$t/se/cli" crew_workers_start 1 lead cat sx "$t/src" 0 60 5 1 2>&1)
+  ck "and agichan workers sees it: --count starts no second copy, --list shows it running" \
+    "$out|$(grep -c . "$t/se/log")|$(CREW_PROC=$t/noproc crew_workers_list | grep -c "^@sx-1 running (pid $(cat "$AGICHAN_DATA/workers/sx-1.pid"),")" \
+    "agichan: @sx-1 is already running|0|1"
+  : >"$t/alive.stop"
 
   # The roster.
   out=$(crew_roster '{"tasks":[{"id":"t1","state":"claimed","owner":"w1","creator":"lead","title":"a","assigned_ms":1000},
@@ -980,12 +1032,29 @@ EOF
   out=$(crew_share '{"tasks":[],"handles":{},"workers":{},"not_counted":{"no_key":0}}' --missing 2>&1)
   ck "nobody missing messages: nothing is sent" "$(calls | grep -c 'chat forward') $(grep -c 'no worker says' <<<"$out")" "0 1"
 
+  # The entry point below, through an absolute link to a relative one whose ..
+  # is taken in a linked directory (a logical .. lands in the decoy $e/sd); then
+  # as sd/crew.sh with CDPATH naming the decoy $e/decoy.
+  local here e=$t/entry
+  here=$(cd -P "$(dirname "$0")" && pwd -P)
+  mkdir -p "$e/ln/bin" "$e/ln/deep/er" "$e/sd" "$e/decoy/sd"
+  ln -s "$here" "$e/ln/sd"
+  ln -s "../../sd/${0##*/}" "$e/ln/deep/er/rel"
+  ln -s deep/er "$e/ln/d"
+  ln -s "$e/ln/d/rel" "$e/ln/bin/crew"
+  ck "run through links, or by a relative path with CDPATH set, crew.sh --selftest finds lib.sh" \
+    "$(cd "$e/ln" && { AGICHAN_SELFTEST_ENTRY=1 bash bin/crew --selftest 2>&1
+      CDPATH="$e/decoy" AGICHAN_SELFTEST_ENTRY=1 bash "sd/${0##*/}" --selftest 2>&1; } | tr '\n' ' ')" \
+    "function function "
+
   echo "crew --selftest: $pass/$((pass + fail)) PASS (scratch: $t)"
   [ "$fail" -eq 0 ]
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = --selftest ]; then
-  . "$(dirname "$(readlink -f "$0")")/lib.sh"
+  # lib.sh's agichan_realpath, inline: it is lib.sh that this finds.
+  p=$0; while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac; done
+  . "$(CDPATH='' cd -P "$(dirname "$p")" && pwd -P)/lib.sh"
   crew_selftest
   exit $?
 fi
