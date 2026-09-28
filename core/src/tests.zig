@@ -21,4 +21,6 @@ test {
     _ = @import("tests/share_rules.zig");
     _ = @import("tests/board_fixtures.zig");
     _ = @import("tests/flows_relay.zig");
+    _ = @import("tests/adversarial.zig");
+    _ = @import("tests/fuzz.zig");
 }
