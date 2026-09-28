@@ -27,6 +27,17 @@ pub const Keypair = struct {
     }
 };
 
+/// A fresh random wallet keypair (keygen). generateDeterministic rejects only
+/// the astronomically unlikely all-zero-derived identity, so a retry never loops.
+pub fn generate(rng: std.Random) Keypair {
+    while (true) {
+        var seed: [32]u8 = undefined;
+        rng.bytes(&seed);
+        const pair = crypto.Ed25519.KeyPair.generateDeterministic(seed) catch continue;
+        return .{ .seed = seed, .public_key = pair.public_key.toBytes() };
+    }
+}
+
 pub const ParseError = error{ InvalidKeypair, KeypairMismatch, OutOfMemory };
 
 pub fn parse(gpa: Allocator, text: []const u8) ParseError!Keypair {

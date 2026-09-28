@@ -16,11 +16,18 @@ test {
     _ = @import("paths.zig");
     _ = @import("flows.zig");
     _ = @import("statefile.zig");
+    _ = @import("data.zig");
+    _ = @import("spawn.zig");
+    _ = @import("solana.zig");
+    _ = @import("client.zig");
+    _ = @import("crew.zig");
+    _ = @import("vm.zig");
     _ = @import("cli.zig");
     _ = @import("tests/vectors.zig");
     _ = @import("tests/share_rules.zig");
     _ = @import("tests/board_fixtures.zig");
     _ = @import("tests/flows_relay.zig");
+    _ = @import("tests/crew_run.zig");
     _ = @import("tests/adversarial.zig");
     _ = @import("tests/fuzz.zig");
 }

@@ -356,6 +356,136 @@ pub fn send(ctx: *Context, room: []const u8, plaintext: []const u8) Error!u8 {
     return printReply(ctx, try aex(ctx, path, "POST", try msg.finish(), ctx.st.token));
 }
 
+/// `<wallet>` as a room user id `@<wallet>:<server>`, the server taken from our
+/// own user id; a value that already has ':' is used as is (chat.cpp's rule for
+/// ban and forward targets).
+fn targetUserId(ctx: *Context, wallet: []const u8) Error!?[]const u8 {
+    if (std.mem.indexOfScalar(u8, wallet, ':') != null) return wallet;
+    const colon = std.mem.indexOfScalar(u8, ctx.st.user_id, ':') orelse return null;
+    const bare = if (wallet.len != 0 and wallet[0] == '@') wallet[1..] else wallet;
+    return try std.fmt.allocPrint(ctx.a, "@{s}{s}", .{ bare, ctx.st.user_id[colon..] });
+}
+
+pub const CreatedRoom = union(enum) { ok: []const u8, err: []const u8 };
+
+/// `create <name>`: a private, invite-only, encrypted room; returns its id.
+pub fn createRoom(ctx: *Context, name: []const u8) Error!CreatedRoom {
+    var b = try json.Object.init(ctx.a);
+    try b.string("name", name);
+    try b.string("visibility", "private");
+    const r = try aex(ctx, "/aexchat/rooms/create", "POST", try b.finish(), ctx.st.token);
+    if (!r.ok) return .{ .err = r.err };
+    const doc = (try parseBody(ctx, r.body)) orelse return .{ .err = try std.fmt.allocPrint(ctx.a, "create: unexpected reply {s}", .{r.body}) };
+    const id = json.getString(doc, "room_id") orelse return .{ .err = try std.fmt.allocPrint(ctx.a, "create: no room_id in reply {s}", .{r.body}) };
+    return .{ .ok = id };
+}
+
+/// `create <name>`: prints the reply, as the C++ CLI does.
+pub fn create(ctx: *Context, name: []const u8) Error!u8 {
+    var b = try json.Object.init(ctx.a);
+    try b.string("name", name);
+    try b.string("visibility", "private");
+    return printReply(ctx, try aex(ctx, "/aexchat/rooms/create", "POST", try b.finish(), ctx.st.token));
+}
+
+/// `invite <room> <wallet>`.
+pub fn invite(ctx: *Context, room: []const u8, wallet: []const u8) Error!u8 {
+    var b = try json.Object.init(ctx.a);
+    try b.string("wallet", wallet);
+    const path = try std.fmt.allocPrint(ctx.a, "/aexchat/rooms/{s}/invite", .{room});
+    return printReply(ctx, try aex(ctx, path, "POST", try b.finish(), ctx.st.token));
+}
+
+/// `leave <room>`.
+pub fn leave(ctx: *Context, room: []const u8) Error!u8 {
+    const path = try std.fmt.allocPrint(ctx.a, "/aexchat/rooms/{s}/leave", .{room});
+    return printReply(ctx, try aex(ctx, path, "POST", "", ctx.st.token));
+}
+
+/// `members <room>` (GET): prints the reply.
+pub fn membersReply(ctx: *Context, room: []const u8) Error!u8 {
+    const path = try std.fmt.allocPrint(ctx.a, "/aexchat/rooms/{s}/members", .{room});
+    return printReply(ctx, try aex(ctx, path, "GET", "", ctx.st.token));
+}
+
+/// `ban <room> <wallet>`: a bare wallet gets this server's suffix.
+pub fn ban(ctx: *Context, room: []const u8, wallet: []const u8) Error!u8 {
+    const target = (try targetUserId(ctx, wallet)) orelse
+        return fail(ctx, "own user id has no server part; log in first");
+    var b = try json.Object.init(ctx.a);
+    try b.string("user_id", target);
+    const path = try std.fmt.allocPrint(ctx.a, "/aexchat/rooms/{s}/ban", .{room});
+    return printReply(ctx, try aex(ctx, path, "POST", try b.finish(), ctx.st.token));
+}
+
+/// `forward <room> <wallet> --limit N`: re-seal this identity's keys for the
+/// room's last N encrypted events to every device of `wallet`, so a member who
+/// joined late can read them. The receiver keeps them forwarded (never
+/// sender-verified). Prints "forwarded N key(s) for M event(s) to <t> (D device(s))".
+pub fn forward(ctx: *Context, room: []const u8, wallet: []const u8, limit: u64) Error!u8 {
+    var store = e2ee.KeyStore.init(ctx.a);
+    var mgr = (try manager(ctx, &store)) orelse return 1;
+    defer mgr.deinit();
+    var outcomes = Outcomes.initFill(0);
+    var wrong_room: usize = 0;
+    if (try importPendingShares(ctx, room, &store, &mgr, &outcomes, &wrong_room)) |why| return fail(ctx, why);
+
+    const target = (try targetUserId(ctx, wallet)) orelse
+        return failf(ctx, "own user id has no server part: {s}", .{ctx.st.user_id});
+    const devices = switch (try loadDeviceKeys(ctx, &.{target}, &store)) {
+        .ok => |d| d,
+        .err => |e| return failf(ctx, "keys/query: {s}", .{e}),
+    };
+    var targets: std.ArrayListUnmanaged(e2ee.Target) = .empty;
+    for (devices) |d| {
+        if (std.mem.eql(u8, d.user, target)) try targets.append(ctx.a, .{ .user = d.user, .device = d.id });
+    }
+    if (targets.items.len == 0)
+        return failf(ctx, "{s} has no published device; it must log in first", .{target});
+
+    const path = try std.fmt.allocPrint(ctx.a, "/aexchat/rooms/{s}/messages?dir=b&limit={d}", .{ room, limit });
+    const r = try aex(ctx, path, "GET", "", ctx.st.token);
+    if (!r.ok) return failf(ctx, "messages: {s}", .{r.err});
+    const doc = (try parseBody(ctx, r.body)) orelse return failf(ctx, "messages: unexpected reply {s}", .{r.body});
+    const chunk = (doc.get("chunk") orelse return failf(ctx, "messages: unexpected reply {s}", .{r.body})).asArray() orelse
+        return failf(ctx, "messages: unexpected reply {s}", .{r.body});
+    var which: std.ArrayListUnmanaged(e2ee.SessionRef) = .empty;
+    for (chunk) |ev| {
+        const ty = json.getString(ev, "type") orelse continue;
+        if (!std.mem.eql(u8, ty, "m.room.encrypted")) continue;
+        const sender = json.getString(ev, "sender") orelse continue;
+        const content = ev.get("content") orelse continue;
+        const sid = json.getString(content, "session_id") orelse continue;
+        try which.append(ctx.a, .{ .sender = sender, .session_id = sid });
+    }
+
+    const all = try mgr.forwardSessions(ctx.a, room, which.items, targets.items, ctx.rng);
+    var shares: std.ArrayListUnmanaged(e2ee.KeyShareEvent) = .empty;
+    for (all) |s| {
+        if (s.encrypted_key.len != 0) try shares.append(ctx.a, s);
+    }
+    if (shares.items.len != 0) {
+        var arr = try json.Array.init(ctx.a);
+        for (shares.items) |s| {
+            var e = try json.Object.init(ctx.a);
+            try e.string("target_user", s.target_user);
+            try e.string("room_id", s.room_id);
+            try e.string("session_id", s.session_id);
+            try e.string("encrypted_key", try crypto.toHex(ctx.a, s.encrypted_key));
+            try e.string("sender_x25519_public", &crypto.toHex32(s.sender_x25519_public));
+            try arr.raw(try e.finish());
+        }
+        var body = try json.Object.init(ctx.a);
+        try body.raw("shares", try arr.finish());
+        const up = try aex(ctx, "/aexchat/keys/share", "POST", try body.finish(), ctx.st.token);
+        if (!up.ok) return failf(ctx, "keys/share: {s} (nothing forwarded)", .{up.err});
+    }
+    ctx.st.sessions = try mgr.exportSessions(ctx.a);
+    if (try save(ctx)) |why| return fail(ctx, why);
+    try ctx.out.print("forwarded {d} key(s) for {d} event(s) to {s} ({d} device(s))\n", .{ shares.items.len, which.items.len, try text.oneLine(ctx.a, target), targets.items.len });
+    return 0;
+}
+
 const Outcomes = std.EnumArray(e2ee.ShareStatus, usize);
 
 /// import_pending_shares: the room's pending key shares, each checked
@@ -410,11 +540,57 @@ fn importPendingShares(ctx: *Context, room: []const u8, store: *e2ee.KeyStore, m
     return null;
 }
 
+pub const BoardData = struct { tasks: []board.Task, bindings: []board.Binding };
+
+/// The task board as structured data (for `pay`'s refusal check): imports
+/// pending shares, decrypts the sender-verified and forwarded events, and folds
+/// them with this room's kept handle chains. Advances and saves the sessions.
+pub fn readBoard(ctx: *Context, room: []const u8, limit: u64) Error!BoardData {
+    const empty: BoardData = .{ .tasks = &.{}, .bindings = &.{} };
+    var store = e2ee.KeyStore.init(ctx.a);
+    var mgr = (try manager(ctx, &store)) orelse return empty;
+    defer mgr.deinit();
+    var outcomes = Outcomes.initFill(0);
+    var wrong_room: usize = 0;
+    _ = try importPendingShares(ctx, room, &store, &mgr, &outcomes, &wrong_room);
+    const path = try std.fmt.allocPrint(ctx.a, "/aexchat/rooms/{s}/messages?dir=b&limit={d}", .{ room, limit });
+    const r = try aex(ctx, path, "GET", "", ctx.st.token);
+    if (!r.ok) return empty;
+    const doc = (try parseBody(ctx, r.body)) orelse return empty;
+    const chunk = (doc.get("chunk") orelse return empty).asArray() orelse return empty;
+    var board_lines: std.ArrayListUnmanaged(board.Line) = .empty;
+    for (chunk) |ev| {
+        const ev_type = json.getString(ev, "type") orelse continue;
+        if (!std.mem.eql(u8, ev_type, "m.room.encrypted")) continue;
+        const sender = json.getString(ev, "sender") orelse continue;
+        const ts_ms: i64 = if (ev.get("origin_server_ts")) |t| t.asInt() orelse 0 else 0;
+        const content = ev.get("content") orelse continue;
+        const algorithm = json.getString(content, "algorithm") orelse continue;
+        if (!std.mem.eql(u8, algorithm, "megolm.v1")) continue;
+        const sid = json.getString(content, "session_id") orelse continue;
+        const ct = json.getString(content, "ciphertext") orelse continue;
+        const index: ?i64 = if (content.get("message_index")) |v| v.asInt() else null;
+        if (index == null or index.? < 0) continue;
+        const bytes = (try crypto.fromHex(ctx.a, ct)) orelse continue;
+        const msg: e2ee.EncryptedMessage = .{ .session_id = sid, .message_index = @truncate(@as(u64, @intCast(index.?))), .ciphertext = bytes };
+        const pt = (try mgr.decrypt(ctx.a, msg, sender)) orelse continue;
+        if (pt.verified or pt.forwarded_by.len != 0)
+            try board_lines.append(ctx.a, .{ .sender = sender, .text = pt.plaintext, .ts_ms = ts_ms });
+    }
+    std.mem.reverse(board.Line, board_lines.items);
+    var bindings: std.ArrayListUnmanaged(board.Binding) = .empty;
+    const chains = try ctx.st.pinsOf(ctx.a, room);
+    const tasks = try board.fold(ctx.a, board_lines.items, &bindings, chains, null);
+    ctx.st.sessions = try mgr.exportSessions(ctx.a);
+    _ = try save(ctx);
+    return .{ .tasks = tasks, .bindings = bindings.items };
+}
+
 pub const ReadMode = enum { lines, board_text, board_json };
 
 /// `read` and `tasks`: import pending shares, decrypt the last `limit` events,
 /// print them oldest first or fold the verified ones into the board.
-pub fn read(ctx: *Context, room: []const u8, limit: u64, mode: ReadMode) Error!u8 {
+pub fn read(ctx: *Context, room: []const u8, limit: u64, mode: ReadMode, mention: []const u8) Error!u8 {
     var store = e2ee.KeyStore.init(ctx.a);
     var mgr = (try manager(ctx, &store)) orelse return 1;
     defer mgr.deinit();
@@ -491,9 +667,11 @@ pub fn read(ctx: *Context, room: []const u8, limit: u64, mode: ReadMode) Error!u
         } else {
             continue; // state and control events
         }
-        try lines.append(ctx.a, try std.fmt.allocPrint(ctx.a, "{s}: {s}{s}", .{
-            try text.oneLine(ctx.a, sender), tag, try text.oneLine(ctx.a, body),
-        }));
+        // `read --mention H` keeps only messages naming @H or @ALL (the digest).
+        if (mention.len == 0 or text.addressedTo(body, mention))
+            try lines.append(ctx.a, try std.fmt.allocPrint(ctx.a, "{s}: {s}{s}", .{
+                try text.oneLine(ctx.a, sender), tag, try text.oneLine(ctx.a, body),
+            }));
         if (verified or via.len != 0) {
             try board_lines.append(ctx.a, .{ .sender = sender, .text = body, .ts_ms = ts_ms });
         } else if (tag.len == 0) {

@@ -82,8 +82,8 @@ fn run(a: Allocator, cmd: Command, state_text: []const u8, kp_text: []const u8, 
     return switch (cmd) {
         .join => try flows.join(&ctx, room),
         .send => try flows.send(&ctx, room, text),
-        .read => try flows.read(&ctx, room, 50, .lines),
-        .tasks_json => try flows.read(&ctx, room, 50, .board_json),
+        .read => try flows.read(&ctx, room, 50, .lines, ""),
+        .tasks_json => try flows.read(&ctx, room, 50, .board_json, ""),
         .login => unreachable,
     };
 }
