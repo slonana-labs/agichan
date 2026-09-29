@@ -19,6 +19,7 @@ test {
     _ = @import("data.zig");
     _ = @import("spawn.zig");
     _ = @import("solana.zig");
+    _ = @import("aexchan.zig");
     _ = @import("client.zig");
     _ = @import("swarm.zig");
     _ = @import("vm.zig");
