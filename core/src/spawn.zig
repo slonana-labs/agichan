@@ -1,5 +1,5 @@
 //! Cross-platform process supervision, replacing scripts/lib.sh's setsid/nohup
-//! spawn, its /proc-or-ps liveness (crew_alive) and pid-file stop. std-only.
+//! spawn, its /proc-or-ps liveness (swarm_alive) and pid-file stop. std-only.
 //!
 //!   POSIX  : fork + setsid (a session of its own, so SIGHUP to the terminal
 //!            spares it), stdin /dev/null, stdout+stderr appended to the log,
@@ -12,7 +12,7 @@
 //!            GetExitCodeProcess == STILL_ACTIVE; the handle is not checked.
 //!
 //! A stop is by RECORDED pid (never a pattern, never kill(-1)/kill(0)): every
-//! path guards pid > 0. The crew's own graceful stop is a `.stop` file the
+//! path guards pid > 0. The swarm's own graceful stop is a `.stop` file the
 //! worker reads; terminate() here is the hard stop for a stuck child.
 const std = @import("std");
 const builtin = @import("builtin");
@@ -48,7 +48,7 @@ pub fn alive(a: Allocator, pid: Pid, handle: []const u8) bool {
         const data = std.fs.cwd().readFileAlloc(a, path, 1 << 20) catch return false;
         defer a.free(data);
         if (handle.len == 0) return true;
-        // cmdline is NUL-separated; the crew's handle is checked as " worker --as <h> ".
+        // cmdline is NUL-separated; the swarm's handle is checked as " worker --as <h> ".
         for (data) |*c| {
             if (c.* == 0) c.* = ' ';
         }
@@ -61,7 +61,7 @@ pub fn alive(a: Allocator, pid: Pid, handle: []const u8) bool {
 
 pub const TerminateError = error{ InvalidPid, TerminateFailed };
 
-/// A hard stop of one recorded pid. Never called by the crew's normal stop
+/// A hard stop of one recorded pid. Never called by the swarm's normal stop
 /// (that is the `.stop` file); here for a wedged child. pid > 0 is enforced.
 pub fn terminate(pid: Pid) TerminateError!void {
     if (pid <= 0) return error.InvalidPid; // never kill(-1) (every process) or kill(0) (our group)
@@ -308,7 +308,7 @@ test "spawn: a detached child runs, is found by its handle, and stops" {
     defer a.free(log);
 
     // sleep only accepts numeric durations, so the handle we look for is the
-    // exe name in its cmdline (the crew looks for `worker --as <h>` the same way).
+    // exe name in its cmdline (the swarm looks for `worker --as <h>` the same way).
     const pid = try spawnDetached(a, &.{ sleep_bin, "37" }, log);
     try testing.expect(pid > 0);
     // Give fork+exec a moment to replace the image so the argv is in cmdline.

@@ -1,12 +1,12 @@
 //! The command line: global options, then the wallet subcommands (login, join,
 //! send, read, tasks, keygen, address, create, invite, leave, ban, members,
-//! forward, pay) which run through client.zig, and the crew subcommands
+//! forward, pay) which run through client.zig, and the swarm subcommands
 //! (identity, digest, room, join-code, join, worker, workers, roster, share,
-//! vm, manager) which run through crew.zig / vm.zig. No slonana binary, no bash.
+//! vm, manager) which run through swarm.zig / vm.zig. No slonana binary, no bash.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const client = @import("client.zig");
-const crew = @import("crew.zig");
+const swarm = @import("swarm.zig");
 const vm = @import("vm.zig");
 const text = @import("text.zig");
 const auth = @import("auth.zig");
@@ -19,7 +19,7 @@ pub const default_url = "https://rpc.slonana.com";
 
 const usage =
     \\Usage: agichan [--url URL] [--room ID] [--keys DIR] [--data DIR] [--sponsor KP] <command> ...
-    \\  A crew of coding agents over an end-to-end encrypted channel, self-contained
+    \\  A swarm of coding agents over an end-to-end encrypted channel, self-contained
     \\  (no slonana binary, no bash), on Linux, macOS and Windows.
     \\
     \\Wallet commands (need -k KEYPAIR):
@@ -30,7 +30,7 @@ const usage =
     \\  pay <ROOM> <@HANDLE|WALLET> <LAMPORTS> --as <H> --task <ID>
     \\  keygen new --outfile PATH | address --keypair PATH
     \\
-    \\Crew commands (a sponsor wallet and per-project channel are set up on first use):
+    \\Swarm commands (a sponsor wallet and per-project channel are set up on first use):
     \\  identity <handle> | digest [--as <handle>] | room
     \\  join-code [--ttl 24h] | join <code> [--dir D] [--force]
     \\  worker --as <h> --manager <m> [--agent A] [--dir D] [--git] [--push] [--once] [--max N] [--poll S] [--timeout S]
@@ -172,14 +172,14 @@ pub fn run(a: Allocator, argv: []const []const u8, io: Io) !u8 {
     // Wallet commands (need -k), dispatched through client.execAs.
     if (walletCmd(sub)) |_| return try runWallet(a, env, argv, pos, sub, io);
 
-    // Crew commands.
-    return try runCrew(a, env, argv, pos, sub, url, io);
+    // Swarm commands.
+    return try runSwarm(a, env, argv, pos, sub, url, io);
 }
 
 fn walletCmd(sub: []const u8) ?void {
     const cmds = [_][]const u8{ "login", "join-wallet", "send", "read", "tasks", "create", "invite", "leave", "ban", "members", "forward", "pay" };
-    // "join" is a crew command (join a machine); the wallet-level room join is
-    // reached through crew setup, so it is not in this set.
+    // "join" is a swarm command (join a machine); the wallet-level room join is
+    // reached through swarm setup, so it is not in this set.
     for (cmds) |c| {
         if (std.mem.eql(u8, sub, c)) return {};
     }
@@ -245,7 +245,7 @@ fn runWallet(a: Allocator, env: client.Env, argv: []const []const u8, pos: []con
     return client.execAs(env, keypair_path, state, cmd, io.out, io.err);
 }
 
-// ---- crew setup + dispatch -------------------------------------------------
+// ---- swarm setup + dispatch -------------------------------------------------
 
 fn resolveSponsor(a: Allocator, env: client.Env, data_dir: []const u8, sponsor_opt: ?[]const u8) !?[]const u8 {
     if (sponsor_opt) |s| return s;
@@ -296,7 +296,7 @@ fn resolveRoom(a: Allocator, env: client.Env, sponsor: []const u8, data_dir: []c
     return id;
 }
 
-fn miniCtx(a: Allocator, env: client.Env, sponsor: []const u8, room: []const u8, data_dir: []const u8, io: Io) !crew.Ctx {
+fn miniCtx(a: Allocator, env: client.Env, sponsor: []const u8, room: []const u8, data_dir: []const u8, io: Io) !swarm.Ctx {
     return .{
         .a = a,
         .env = env,
@@ -310,7 +310,7 @@ fn miniCtx(a: Allocator, env: client.Env, sponsor: []const u8, room: []const u8,
     };
 }
 
-fn runCrew(a: Allocator, env: client.Env, argv: []const []const u8, pos: []const []const u8, sub: []const u8, url: []const u8, io: Io) !u8 {
+fn runSwarm(a: Allocator, env: client.Env, argv: []const []const u8, pos: []const []const u8, sub: []const u8, url: []const u8, io: Io) !u8 {
     _ = url;
     const data_dir = flagVal(argv, "--data") orelse try data.dataDir(a);
     const keys_dir = flagVal(argv, "--keys") orelse try data.keysDir(a);
@@ -328,12 +328,12 @@ fn runCrew(a: Allocator, env: client.Env, argv: []const []const u8, pos: []const
         var ctx = try miniCtx(a, env, sponsor, "", data_dir, io);
         ctx.keys_dir = keys_dir;
         ctx.self_exe = try spawn.selfExe(a);
-        return crew.joinChannel(&ctx, pos[1], dir, hasFlag(argv, "--force"));
+        return swarm.joinChannel(&ctx, pos[1], dir, hasFlag(argv, "--force"));
     }
 
     const room = (try resolveRoom(a, env, sponsor, data_dir, flagVal(argv, "--room"), io)) orelse
         return io.fail("could not resolve the channel; pass --room ID");
-    var ctx: crew.Ctx = .{
+    var ctx: swarm.Ctx = .{
         .a = a,
         .env = env,
         .room = room,
@@ -351,20 +351,20 @@ fn runCrew(a: Allocator, env: client.Env, argv: []const []const u8, pos: []const
     }
     if (std.mem.eql(u8, sub, "identity")) {
         if (pos.len != 2) return io.refuse("usage: agichan identity <handle>");
-        return crew.identity(&ctx, pos[1]);
+        return swarm.identity(&ctx, pos[1]);
     }
     if (std.mem.eql(u8, sub, "digest")) return digest(&ctx, argv, io);
     if (std.mem.eql(u8, sub, "join-code")) {
-        const ttl = if (flagVal(argv, "--ttl")) |t| (crew.secondsOf(t) orelse return io.refuse("--ttl takes 30m, 24h, 7d or seconds")) else 86400;
-        return crew.joinCode(&ctx, ttl);
+        const ttl = if (flagVal(argv, "--ttl")) |t| (swarm.secondsOf(t) orelse return io.refuse("--ttl takes 30m, 24h, 7d or seconds")) else 86400;
+        return swarm.joinCode(&ctx, ttl);
     }
-    if (std.mem.eql(u8, sub, "roster")) return crew.rosterCmd(&ctx);
+    if (std.mem.eql(u8, sub, "roster")) return swarm.rosterCmd(&ctx);
     if (std.mem.eql(u8, sub, "share")) {
         if (pos.len < 2 and !hasFlag(argv, "--missing")) return io.refuse("usage: agichan share --missing | <handle>...");
         var sargs: std.ArrayListUnmanaged([]const u8) = .empty;
         if (hasFlag(argv, "--missing")) try sargs.append(a, "--missing");
         for (pos[1..]) |p| try sargs.append(a, p);
-        return crew.shareCmd(&ctx, sargs.items);
+        return swarm.shareCmd(&ctx, sargs.items);
     }
     if (std.mem.eql(u8, sub, "worker")) return workerCmd(&ctx, argv, io);
     if (std.mem.eql(u8, sub, "workers")) return workersCmd(&ctx, argv, pos, io);
@@ -374,10 +374,10 @@ fn runCrew(a: Allocator, env: client.Env, argv: []const []const u8, pos: []const
 }
 
 fn secs(argv: []const []const u8, name: []const u8, default_v: u64) ?u64 {
-    return if (flagVal(argv, name)) |v| crew.secondsOf(v) else default_v;
+    return if (flagVal(argv, name)) |v| swarm.secondsOf(v) else default_v;
 }
 
-fn workerCmd(ctx: *crew.Ctx, argv: []const []const u8, io: Io) !u8 {
+fn workerCmd(ctx: *swarm.Ctx, argv: []const []const u8, io: Io) !u8 {
     const as = flagVal(argv, "--as") orelse return io.refuse("worker needs --as <handle>");
     const mgr = flagVal(argv, "--manager") orelse return io.refuse("worker needs --manager <handle>");
     const dir = flagVal(argv, "--dir") orelse (std.process.getCwdAlloc(ctx.a) catch ".");
@@ -385,7 +385,7 @@ fn workerCmd(ctx: *crew.Ctx, argv: []const []const u8, io: Io) !u8 {
     const tmo = secs(argv, "--timeout", 3600) orelse return io.refuse("--timeout takes 30m, 2h or seconds");
     var max: u64 = 0;
     if (flagVal(argv, "--max")) |m| max = std.fmt.parseInt(u64, m, 10) catch return io.refuse("--max takes a number");
-    return crew.worker(ctx, .{
+    return swarm.worker(ctx, .{
         .me = as,
         .mgr = mgr,
         .agent = flagVal(argv, "--agent") orelse "claude",
@@ -400,9 +400,9 @@ fn workerCmd(ctx: *crew.Ctx, argv: []const []const u8, io: Io) !u8 {
     });
 }
 
-fn workersCmd(ctx: *crew.Ctx, argv: []const []const u8, pos: []const []const u8, io: Io) !u8 {
-    if (hasFlag(argv, "--list")) return crew.workersList(ctx);
-    if (hasFlag(argv, "--stop")) return crew.workersStop(ctx, pos[1..]);
+fn workersCmd(ctx: *swarm.Ctx, argv: []const []const u8, pos: []const []const u8, io: Io) !u8 {
+    if (hasFlag(argv, "--list")) return swarm.workersList(ctx);
+    if (hasFlag(argv, "--stop")) return swarm.workersStop(ctx, pos[1..]);
     const count_s = flagVal(argv, "--count") orelse return io.refuse("workers needs --count N (or --list, --stop)");
     const count = std.fmt.parseInt(u64, count_s, 10) catch return io.refuse("--count takes a number");
     if (count == 0) return io.refuse("--count takes a number");
@@ -419,11 +419,11 @@ fn workersCmd(ctx: *crew.Ctx, argv: []const []const u8, pos: []const []const u8,
                 wallet = @import("base58.zig").encode(ctx.a, &k.public_key) catch "0000";
             } else |_| {}
         }
-        prefix = try crew.defaultPrefix(ctx.a, crew.hostShort(ctx.a), wallet);
+        prefix = try swarm.defaultPrefix(ctx.a, swarm.hostShort(ctx.a), wallet);
     }
     const par = if (flagVal(argv, "--parallel")) |p| (std.fmt.parseInt(u64, p, 10) catch 0) else 4;
     if (par < 1 or par > 8) return io.refuse("--parallel takes 1 to 8");
-    return crew.workersStart(ctx, .{
+    return swarm.workersStart(ctx, .{
         .count = count,
         .mgr = mgr,
         .agent = flagVal(argv, "--agent") orelse "claude",
@@ -436,24 +436,24 @@ fn workersCmd(ctx: *crew.Ctx, argv: []const []const u8, pos: []const []const u8,
     });
 }
 
-fn managerCmd(ctx: *crew.Ctx, argv: []const []const u8, pos: []const []const u8, io: Io) !u8 {
+fn managerCmd(ctx: *swarm.Ctx, argv: []const []const u8, pos: []const []const u8, io: Io) !u8 {
     const as = flagVal(argv, "--as") orelse return io.refuse("manager needs --as <handle>");
     if (pos.len < 2) return io.refuse("usage: manager --as <lead> assign <id> <@worker|ALL> <title...> | stop <@worker> | roster");
     const action = pos[1];
-    if (std.mem.eql(u8, action, "roster")) return crew.rosterCmd(ctx);
+    if (std.mem.eql(u8, action, "roster")) return swarm.rosterCmd(ctx);
     if (std.mem.eql(u8, action, "stop")) {
         if (pos.len != 3) return io.refuse("usage: manager --as <lead> stop <@worker>");
-        return crew.managerStop(ctx, as, pos[2]);
+        return swarm.managerStop(ctx, as, pos[2]);
     }
     if (std.mem.eql(u8, action, "assign")) {
         if (pos.len < 5) return io.refuse("usage: manager --as <lead> assign <id> <@worker|ALL> <title...>");
         const title = try std.mem.join(ctx.a, " ", pos[4..]);
-        return crew.managerAssign(ctx, as, pos[2], pos[3], title);
+        return swarm.managerAssign(ctx, as, pos[2], pos[3], title);
     }
     return io.refuse("manager: assign | stop | roster");
 }
 
-fn vmCmd(ctx: *crew.Ctx, argv: []const []const u8, pos: []const []const u8, io: Io) !u8 {
+fn vmCmd(ctx: *swarm.Ctx, argv: []const []const u8, pos: []const []const u8, io: Io) !u8 {
     if (pos.len < 2) return io.refuse("usage: agichan vm script|order|list|release ...");
     const a = ctx.a;
     const action = pos[1];
@@ -465,7 +465,7 @@ fn vmCmd(ctx: *crew.Ctx, argv: []const []const u8, pos: []const []const u8, io: 
         const repo = flagVal(argv, "--repo") orelse return io.refuse("vm script needs --repo URL");
         const hours = if (flagVal(argv, "--hours")) |h| (std.fmt.parseInt(u64, h, 10) catch return io.refuse("--hours takes 1 to 9999")) else 4;
         const workers = if (flagVal(argv, "--workers")) |w| (std.fmt.parseInt(u64, w, 10) catch return io.refuse("--workers takes 1 to 999")) else 2;
-        const code = try crew.joinCodeString(ctx, hours * 3600) orelse return io.fail("could not issue a join code");
+        const code = try swarm.joinCodeString(ctx, hours * 3600) orelse return io.fail("could not issue a join code");
         const r = try vm.script(a, .{
             .code = code,
             .workers = workers,
@@ -490,7 +490,7 @@ fn vmCmd(ctx: *crew.Ctx, argv: []const []const u8, pos: []const []const u8, io: 
 
 /// The digest: messages naming @who or @ALL, and open/unpaid tasks, framed as
 /// data from other agents (mcp-chat's chat_digest).
-fn digest(ctx: *crew.Ctx, argv: []const []const u8, io: Io) !u8 {
+fn digest(ctx: *swarm.Ctx, argv: []const []const u8, io: Io) !u8 {
     const a = ctx.a;
     var who: []const u8 = "ALL";
     var key = ctx.sponsor;

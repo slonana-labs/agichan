@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# vm.sh — temporary cloud machines for a crew. Sourced by scripts/agichan
-# (bin, rpc, room, sponsor and the crew functions are set before these run);
+# vm.sh — temporary cloud machines for a swarm. Sourced by scripts/agichan
+# (bin, rpc, room, sponsor and the swarm functions are set before these run);
 # `vm.sh --selftest` checks it with stand-ins. Deletes nothing.
 #
 #   agichan vm script ...   a startup script that makes any fresh Ubuntu or
-#                           Debian VM a crew machine: paste it into a
+#                           Debian VM a swarm machine: paste it into a
 #                           provider's user-data field.
 #   agichan vm order ...    the same machine, ordered and paid for in SLON
 #                           through the AEA rental at slonana.com, when it
@@ -35,7 +35,7 @@ vm_script() { # <code> <workers> <manager> <agent> <repo> <hours> <push: 0|1> [E
   [ "$push" = 1 ] && pushflag=" --push"
   cat <<EOF
 #!/bin/bash
-# agichan crew machine, from \`agichan vm script\`: installs the $agent CLI and
+# agichan swarm machine, from \`agichan vm script\`: installs the $agent CLI and
 # agichan, joins one channel with a one-time code, starts $n worker(s) for
 # @$mgr, and asks them to stop after $hours hour(s). The machine itself keeps
 # running (and billing) until whoever ordered it deletes it.
@@ -79,10 +79,10 @@ EOF
   fi
   cat <<EOF
 su - agent -c '. ~/.agichan-env; mkdir -p ~/work && cd ~/work && curl -fsSL https://raw.githubusercontent.com/slonana-labs/agichan/main/install.sh | bash -s -- --join $code --dir ~/work --workers $n --manager $mgr --agent $agent --repo $repo$pushflag' ||
-  { log "joining the crew failed"; exit 1; }
+  { log "joining the swarm failed"; exit 1; }
 systemd-run --on-active=${hours}h --unit agichan-stop su - agent -c '~/.local/bin/agichan workers --stop' >/dev/null ||
   log "no systemd-run: stop the workers with: su - agent -c '~/.local/bin/agichan workers --stop'"
-log "crew machine up: $n worker(s) for @$mgr, stopping after $hours h"
+log "swarm machine up: $n worker(s) for @$mgr, stopping after $hours h"
 EOF
 }
 
@@ -120,20 +120,20 @@ vm_order() { # <payer key> <plan> <hours> <yes: 0|1> <workers> <manager> <agent>
     echo "agichan: would pay $lamports lamports from $payer to the rental treasury $treasury for $plan x ${hours}h; add --yes to order it"
     return 0
   fi
-  script=$(vm_script "$(crew_join_code $((hours * 3600)))" "$n" "$mgr" "$agent" "$repo" "$hours" "$push" "$@") || return 1
+  script=$(vm_script "$(swarm_join_code $((hours * 3600)))" "$n" "$mgr" "$agent" "$repo" "$hours" "$push" "$@") || return 1
   b64=$(printf '%s' "$script" | base64 -w0)
   max=$(jq -r '.t.user_data_max_bytes' <<<"$cat")
   [ "${#b64}" -le "$max" ] || { echo "agichan: the startup script is ${#b64} bytes; the rental takes $max" >&2; return 2; }
   out=$("$bin" -k "$key" -u "$rpc" transfer "$treasury" --lamports "$lamports" 2>&1) ||
-    { echo "agichan: the payment failed; nothing was ordered: $(crew_one_line 300 <<<"$out")" >&2; return 1; }
+    { echo "agichan: the payment failed; nothing was ordered: $(swarm_one_line 300 <<<"$out")" >&2; return 1; }
   sig=$(grep -oE '[1-9A-HJ-NP-Za-km-z]{80,100}' <<<"$out" | tail -1)
-  [ -n "$sig" ] || { echo "agichan: paid, but no signature in: $(crew_one_line 300 <<<"$out")" >&2; return 1; }
+  [ -n "$sig" ] || { echo "agichan: paid, but no signature in: $(swarm_one_line 300 <<<"$out")" >&2; return 1; }
   out=$(jq -cn --arg plan "$plan" --arg renter "$payer" --arg sig "$sig" --argjson hours "$hours" --arg ud "$b64" \
     '{plan: $plan, renter: $renter, payment_sig: $sig, hours: $hours, user_data_b64: $ud}' |
     curl -fsS --proto '=https' --max-time 300 -H 'Content-Type: application/json' --data-binary @- "$AGICHAN_RENT_URL" 2>&1) ||
-    { echo "agichan: paid ($sig), but the order failed: $(crew_one_line 300 <<<"$out"). Give the rental that signature." >&2; return 1; }
+    { echo "agichan: paid ($sig), but the order failed: $(swarm_one_line 300 <<<"$out"). Give the rental that signature." >&2; return 1; }
   order=$(jq -r '.order // empty' <<<"$out")
-  [[ $order =~ ^[A-Za-z0-9_-]{1,100}$ ]] || { echo "agichan: paid ($sig); the rental answered: $(crew_one_line 300 <<<"$out")" >&2; return 1; }
+  [[ $order =~ ^[A-Za-z0-9_-]{1,100}$ ]] || { echo "agichan: paid ($sig); the rental answered: $(swarm_one_line 300 <<<"$out")" >&2; return 1; }
   d=$(agichan_data)/vms
   (umask 077 && mkdir -p "$d" && jq -c --arg sig "$sig" --arg payer "$payer" --arg key "$key" \
     '. + {payment_sig: $sig, renter: $payer, key: $key}' <<<"$out" >"$d/$order.json") || return 1
@@ -161,7 +161,7 @@ vm_release() { # <order>
   [ -n "$sig" ] || { echo "agichan: could not sign the release with $key" >&2; return 1; }
   out=$(jq -cn --arg o "$1" --arg r "$(jq -r '.renter' "$f")" --arg s "$sig" '{order: $o, renter: $r, signature: $s}' |
     curl -fsS --proto '=https' --max-time 60 -H 'Content-Type: application/json' --data-binary @- "$AGICHAN_RENT_URL/release" 2>&1) ||
-    { echo "agichan: the release failed: $(crew_one_line 300 <<<"$out")" >&2; return 1; }
+    { echo "agichan: the release failed: $(swarm_one_line 300 <<<"$out")" >&2; return 1; }
   echo "agichan: released $1: $(jq -r '.status // "?"' <<<"$out")"
 }
 
@@ -169,7 +169,7 @@ vm_release() { # <order>
 
 vm_selftest() {
   # Run through links by the entry-point check at the end: say what was found.
-  if [ -n "${AGICHAN_SELFTEST_ENTRY:-}" ]; then type -t agichan_data crew_join_code | tr '\n' ' '; return; fi
+  if [ -n "${AGICHAN_SELFTEST_ENTRY:-}" ]; then type -t agichan_data swarm_join_code | tr '\n' ' '; return; fi
   local pass=0 fail=0 t out s
   t=$(mktemp -d "${TMPDIR:-/tmp}/agichan-selftest.XXXXXX") || return 2
   command -v jq >/dev/null 2>&1 || { echo "vm.sh --selftest: UNMEASURED: needs jq"; return 2; }
@@ -266,7 +266,7 @@ EOF
   ln -s "../../sd/${0##*/}" "$e/ln/deep/er/rel"
   ln -s deep/er "$e/ln/d"
   ln -s "$e/ln/d/rel" "$e/ln/bin/vm"
-  ck "run through links, or by a relative path with CDPATH set, vm.sh --selftest finds lib.sh and crew.sh" \
+  ck "run through links, or by a relative path with CDPATH set, vm.sh --selftest finds lib.sh and swarm.sh" \
     "$(cd "$e/ln" && { AGICHAN_SELFTEST_ENTRY=1 bash bin/vm --selftest 2>&1
       CDPATH="$e/decoy" AGICHAN_SELFTEST_ENTRY=1 bash "sd/${0##*/}" --selftest 2>&1; })" \
     "function function function function "
@@ -280,7 +280,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = --selftest ]; then
   p=$0; while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac; done
   l=$(CDPATH='' cd -P "$(dirname "$p")" && pwd -P)
   . "$l/lib.sh"
-  . "$l/crew.sh"
+  . "$l/swarm.sh"
   vm_selftest
   exit $?
 fi

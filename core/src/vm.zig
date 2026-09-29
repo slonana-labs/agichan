@@ -1,4 +1,4 @@
-//! Temporary cloud machines for a crew: `vm script` prints a cloud-init/user-
+//! Temporary cloud machines for a swarm: `vm script` prints a cloud-init/user-
 //! data startup script that makes any fresh Ubuntu/Debian VM join one channel
 //! and run workers, then stop after N hours. A port of scripts/vm.sh's
 //! vm_script. `vm order`/`list`/`release` drive the AEA rental, which does not
@@ -7,7 +7,7 @@
 //! machine, not something this process runs.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const crew = @import("crew.zig");
+const swarm = @import("swarm.zig");
 const data = @import("data.zig");
 const json = @import("json.zig");
 
@@ -52,7 +52,7 @@ pub const Result = union(enum) { ok: []const u8, err: []const u8 };
 pub fn script(a: Allocator, args: ScriptArgs) Allocator.Error!Result {
     if (!validCode(args.code)) return .{ .err = "not a join code" };
     if (args.workers < 1 or args.workers > 999) return .{ .err = "--workers takes 1 to 999" };
-    if (!crew.validHandle(args.mgr)) return .{ .err = "--manager takes a handle" };
+    if (!swarm.validHandle(args.mgr)) return .{ .err = "--manager takes a handle" };
     if (!(std.mem.eql(u8, args.agent, "claude") or std.mem.eql(u8, args.agent, "codex") or std.mem.eql(u8, args.agent, "opencode")))
         return .{ .err = "a VM runs claude, codex or opencode (another agent: bake it into your image)" };
     if (!validRepo(args.repo)) return .{ .err = "--repo takes a git URL" };
@@ -78,7 +78,7 @@ pub fn script(a: Allocator, args: ScriptArgs) Allocator.Error!Result {
     const pushflag: []const u8 = if (args.push) " --push" else "";
     try s.print(a,
         \\#!/bin/bash
-        \\# agichan crew machine, from `agichan vm script`: installs the {s} CLI and
+        \\# agichan swarm machine, from `agichan vm script`: installs the {s} CLI and
         \\# agichan, joins one channel with a one-time code, starts {d} worker(s) for
         \\# @{s}, and asks them to stop after {d} hour(s). The machine itself keeps
         \\# running (and billing) until whoever ordered it deletes it.
@@ -119,17 +119,17 @@ pub fn script(a: Allocator, args: ScriptArgs) Allocator.Error!Result {
     }
     try s.print(a,
         \\su - agent -c '. ~/.agichan-env; mkdir -p ~/work && cd ~/work && curl -fsSL https://raw.githubusercontent.com/slonana-labs/agichan/main/install.sh | bash -s -- --join {s} --dir ~/work --workers {d} --manager {s} --agent {s} --repo {s}{s}' ||
-        \\  {{ log "joining the crew failed"; exit 1; }}
+        \\  {{ log "joining the swarm failed"; exit 1; }}
         \\systemd-run --on-active={d}h --unit agichan-stop su - agent -c '~/.local/bin/agichan workers --stop' >/dev/null ||
         \\  log "no systemd-run: stop the workers with: su - agent -c '~/.local/bin/agichan workers --stop'"
-        \\log "crew machine up: {d} worker(s) for @{s}, stopping after {d} h"
+        \\log "swarm machine up: {d} worker(s) for @{s}, stopping after {d} h"
         \\
     , .{ args.code, args.workers, args.mgr, args.agent, args.repo, pushflag, args.hours, args.workers, args.mgr, args.hours });
     return .{ .ok = try s.toOwnedSlice(a) };
 }
 
 /// vm list: the recorded orders in the data dir.
-pub fn list(a: Allocator, data_dir: []const u8, out: *std.Io.Writer) crew.Error!u8 {
+pub fn list(a: Allocator, data_dir: []const u8, out: *std.Io.Writer) swarm.Error!u8 {
     const dir_path = try data.under(a, data_dir, &.{"vms"});
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return 0;
     defer dir.close();
@@ -179,7 +179,7 @@ test "vm: the script installs, joins with the code and workers, schedules the st
     try testing.expect(std.mem.indexOf(u8, s, "claude.ai/install.sh") != null);
     try testing.expect(std.mem.indexOf(u8, s, "--join agc1-YWJj_ZGVm-= --dir ~/work --workers 3 --manager lead --agent claude --repo https://github.com/o/r.git --push'") != null);
     try testing.expect(std.mem.indexOf(u8, s, "systemd-run --on-active=4h") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "crew machine up: 3 worker(s) for @lead, stopping after 4 h") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "swarm machine up: 3 worker(s) for @lead, stopping after 4 h") != null);
 }
 
 test "vm: each agent uses its own installer" {

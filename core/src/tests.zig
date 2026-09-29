@@ -20,14 +20,14 @@ test {
     _ = @import("spawn.zig");
     _ = @import("solana.zig");
     _ = @import("client.zig");
-    _ = @import("crew.zig");
+    _ = @import("swarm.zig");
     _ = @import("vm.zig");
     _ = @import("cli.zig");
     _ = @import("tests/vectors.zig");
     _ = @import("tests/share_rules.zig");
     _ = @import("tests/board_fixtures.zig");
     _ = @import("tests/flows_relay.zig");
-    _ = @import("tests/crew_run.zig");
+    _ = @import("tests/swarm_run.zig");
     _ = @import("tests/adversarial.zig");
     _ = @import("tests/fuzz.zig");
 }

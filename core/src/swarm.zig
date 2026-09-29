@@ -1,5 +1,5 @@
 //! agichan at scale: join codes, the worker loop, the workers supervisor, the
-//! roster and share. A port of scripts/crew.sh with no bash and no jq: the
+//! roster and share. A port of scripts/swarm.sh with no bash and no jq: the
 //! board is parsed with json.zig, chat runs in-process through client.zig, and
 //! workers are supervised with spawn.zig. The rendezvous-hash task ranking,
 //! roster format and join-code wire format match the bash byte for byte.
@@ -16,7 +16,7 @@ const keypair = @import("keypair.zig");
 
 pub const Error = client.Error;
 
-/// Seconds between retries on a relay rate-limit (CREW_RETRY_S in the bash).
+/// Seconds between retries on a relay rate-limit (SWARM_RETRY_S in the bash).
 pub var retry_secs: u64 = 6;
 
 pub const code_prefix = "agc1-";
@@ -40,7 +40,7 @@ pub fn validHandle(h: []const u8) bool {
     return text.isChatHandle(h) and !eqStr(h, "ALL");
 }
 
-/// crew_valid_room: !<id>:<server>, the id/server characters constrained.
+/// swarm_valid_room: !<id>:<server>, the id/server characters constrained.
 pub fn validRoom(r: []const u8) bool {
     if (r.len < 4 or r[0] != '!') return false;
     const colon = std.mem.indexOfScalar(u8, r, ':') orelse return false;
@@ -54,7 +54,7 @@ pub fn validRoom(r: []const u8) bool {
     return true;
 }
 
-/// crew_agent_name: a known agent keeps its name, anything else is "custom".
+/// swarm_agent_name: a known agent keeps its name, anything else is "custom".
 pub fn agentName(agent: []const u8) []const u8 {
     if (eqStr(agent, "claude") or eqStr(agent, "codex") or eqStr(agent, "opencode")) return agent;
     return "custom";
@@ -112,7 +112,7 @@ pub fn missingOf(w: json.Value) u64 {
     return 0;
 }
 
-/// The rendezvous hash of a worker/task pair (crew.sh's mix/rh): the same order
+/// The rendezvous hash of a worker/task pair (swarm.sh's mix/rh): the same order
 /// on every machine, so workers agree who is first for a task without talking.
 fn mix(acc: u64, s: []const u8) u64 {
     var h = acc;
@@ -125,7 +125,7 @@ fn rh(w: []const u8, t: []const u8) u64 {
 
 pub const Pick = struct { id: []const u8, rank: u32 };
 
-/// crew_next_task: the oldest open task the manager assigned to this worker
+/// swarm_next_task: the oldest open task the manager assigned to this worker
 /// (rank 0), else the manager's open @ALL task it ranks best on, its rank being
 /// how many other idle workers rank ahead of it (they wait that many turns).
 pub fn nextTask(a: Allocator, b: json.Value, me: []const u8, mgr: []const u8) Allocator.Error!?Pick {
@@ -184,7 +184,7 @@ pub fn nextTask(a: Allocator, b: json.Value, me: []const u8, mgr: []const u8) Al
     return best;
 }
 
-/// crew_status: the agent's last "STATUS: done" or "STATUS: blocked <why>"
+/// swarm_status: the agent's last "STATUS: done" or "STATUS: blocked <why>"
 /// line, markdown stripped: "done", "blocked <why>", or "".
 pub fn agentStatus(a: Allocator, output: []const u8) Allocator.Error![]const u8 {
     var result: []const u8 = "";
@@ -206,7 +206,7 @@ pub fn agentStatus(a: Allocator, output: []const u8) Allocator.Error![]const u8 
     return result;
 }
 
-/// crew_one_line + summary: drop STATUS lines, collapse whitespace, trim, cap.
+/// swarm_one_line + summary: drop STATUS lines, collapse whitespace, trim, cap.
 pub fn summarize(a: Allocator, output: []const u8, cap: usize) Allocator.Error![]const u8 {
     var kept: std.ArrayList(u8) = .empty;
     defer kept.deinit(a);
@@ -236,7 +236,7 @@ pub fn summarize(a: Allocator, output: []const u8, cap: usize) Allocator.Error![
     return out.toOwnedSlice(a);
 }
 
-/// crew_default_prefix: w-<host up to first dot, odd chars -> ->-<4 of wallet>.
+/// swarm_default_prefix: w-<host up to first dot, odd chars -> ->-<4 of wallet>.
 pub fn defaultPrefix(a: Allocator, host: []const u8, wallet: []const u8) Allocator.Error![]const u8 {
     var h = host;
     if (std.mem.indexOfScalar(u8, h, '.')) |dot| h = h[0..dot];
@@ -252,7 +252,7 @@ pub fn defaultPrefix(a: Allocator, host: []const u8, wallet: []const u8) Allocat
     return std.fmt.allocPrint(a, "w-{s}-{s}", .{ name, w4 });
 }
 
-/// ago(ms): "-", "<n>s", "<n>m" or "<n>h" against `now_ms` (crew_roster).
+/// ago(ms): "-", "<n>s", "<n>m" or "<n>h" against `now_ms` (swarm_roster).
 fn ago(a: Allocator, now_ms: i64, ms: i64) Allocator.Error![]const u8 {
     if (ms <= 0) return a.dupe(u8, "-");
     const s = @divFloor(now_ms - ms, 1000);
@@ -261,7 +261,7 @@ fn ago(a: Allocator, now_ms: i64, ms: i64) Allocator.Error![]const u8 {
     return std.fmt.allocPrint(a, "{d}h", .{@divFloor(s, 3600)});
 }
 
-/// detail with " ?missing=N" removed (crew_roster's gsub).
+/// detail with " ?missing=N" removed (swarm_roster's gsub).
 fn detailNoMissing(a: Allocator, detail: []const u8) Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(a);
@@ -279,7 +279,7 @@ fn detailNoMissing(a: Allocator, detail: []const u8) Allocator.Error![]const u8 
     return out.toOwnedSlice(a);
 }
 
-/// crew_roster: the channel's workers, what each holds, and open work.
+/// swarm_roster: the channel's workers, what each holds, and open work.
 pub fn roster(a: Allocator, b: json.Value, now_ms: i64, out: *std.Io.Writer) Error!void {
     try out.writeAll("workers:\n");
     const tasks: []const json.Value = if (b.get("tasks")) |t| (t.asArray() orelse &.{}) else &.{};
@@ -338,7 +338,7 @@ pub fn roster(a: Allocator, b: json.Value, now_ms: i64, out: *std.Io.Writer) Err
 
 // ---- join code wire format ------------------------------------------------
 
-/// crew_encode: "agc1-" + url-safe base64 (with padding, as base64|tr +/ -_).
+/// swarm_encode: "agc1-" + url-safe base64 (with padding, as base64|tr +/ -_).
 pub fn encodeCode(a: Allocator, payload: []const u8) Allocator.Error![]const u8 {
     const enc = std.base64.url_safe.Encoder;
     const b64 = try a.alloc(u8, enc.calcSize(payload.len));
@@ -348,7 +348,7 @@ pub fn encodeCode(a: Allocator, payload: []const u8) Allocator.Error![]const u8 
 
 pub const DecodeError = error{ NotACode, OutOfMemory };
 
-/// crew_decode: the payload of a join code, or NotACode.
+/// swarm_decode: the payload of a join code, or NotACode.
 pub fn decodeCode(a: Allocator, code: []const u8) DecodeError![]const u8 {
     if (!std.mem.startsWith(u8, code, code_prefix)) return error.NotACode;
     const b64 = code[code_prefix.len..];
@@ -404,7 +404,7 @@ pub fn joinPayload(a: Allocator, room: []const u8, rpc: []const u8, exp: u64, ke
 
 // ---- orchestration --------------------------------------------------------
 
-/// The side effects a worker performs, injectable so the crew logic is tested
+/// The side effects a worker performs, injectable so the swarm logic is tested
 /// without sleeping or spawning a real agent.
 pub const Hooks = struct {
     ctx: *anyopaque = placeholder,
@@ -428,7 +428,7 @@ pub const AgentJob = struct {
     dir: []const u8,
     prompt: []const u8,
     timeout: u64,
-    /// Replaces the per-agent default flags; empty falls back to CREW_AGENT_FLAGS.
+    /// Replaces the per-agent default flags; empty falls back to SWARM_AGENT_FLAGS.
     agent_flags: []const u8 = "",
 };
 pub const AgentResult = struct {
@@ -437,7 +437,7 @@ pub const AgentResult = struct {
     output: []const u8,
 };
 
-/// Everything a crew command needs: how to reach the channel (env), which
+/// Everything a swarm command needs: how to reach the channel (env), which
 /// wallet sponsors it, where state lives, and the injectable side effects.
 pub const Ctx = struct {
     a: Allocator,
@@ -468,15 +468,15 @@ fn chatCapture(ctx: *Ctx, key: []const u8, cmd: client.Cmd) Error!Captured {
     return .{ .code = code, .out = out.written(), .err = err.written() };
 }
 
-/// crew_board: the task board as JSON, parsed; null on any failure or empty.
-fn crewBoard(ctx: *Ctx, key: []const u8) Error!?json.Value {
+/// swarm_board: the task board as JSON, parsed; null on any failure or empty.
+fn swarmBoard(ctx: *Ctx, key: []const u8) Error!?json.Value {
     const r = try chatCapture(ctx, key, .{ .tasks = .{ .room = ctx.room, .limit = 300, .json = true } });
     if (r.code != 0 or r.out.len == 0) return null;
     return json.parse(ctx.a, r.out) catch null;
 }
 
-/// crew_post: send one board line as `key`; true on success.
-fn crewPost(ctx: *Ctx, key: []const u8, line: []const u8) Error!bool {
+/// swarm_post: send one board line as `key`; true on success.
+fn swarmPost(ctx: *Ctx, key: []const u8, line: []const u8) Error!bool {
     const r = try chatCapture(ctx, key, .{ .send = .{ .room = ctx.room, .text = line } });
     return r.code == 0;
 }
@@ -564,7 +564,7 @@ pub const WorkerOpts = struct {
     agent_flags: []const u8 = "",
 };
 
-/// crew_worker: take the manager's tasks one at a time (CLAIM, confirm, run the
+/// swarm_worker: take the manager's tasks one at a time (CLAIM, confirm, run the
 /// agent, DONE with its summary or BLOCKED with why), READY on start and BYE on
 /// exit. Only the manager's tasks move it, and its handle is pinned on start.
 pub fn worker(ctx: *Ctx, o: WorkerOpts) Error!u8 {
@@ -593,7 +593,7 @@ pub fn worker(ctx: *Ctx, o: WorkerOpts) Error!u8 {
         };
     }
     const ready = try std.fmt.allocPrint(a, "READY host={s} agent={s}", .{ hostShort(a), agentName(o.agent) });
-    _ = try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | {s}", .{ o.me, o.mgr, ready }));
+    _ = try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | {s}", .{ o.me, o.mgr, ready }));
 
     var pinned: []const u8 = "";
     var ready_ts: i64 = 0;
@@ -602,7 +602,7 @@ pub fn worker(ctx: *Ctx, o: WorkerOpts) Error!u8 {
     var n: u64 = 0;
     while (true) {
         if (stopRequested(a, stopf, started)) break;
-        const board = (try crewBoard(ctx, key)) orelse {
+        const board = (try swarmBoard(ctx, key)) orelse {
             if (o.once) break;
             ctx.hooks.sleepSecs(ctx.hooks.ctx, o.poll);
             continue;
@@ -620,14 +620,14 @@ pub fn worker(ctx: *Ctx, o: WorkerOpts) Error!u8 {
 
         const miss = notCountedNoKey(board);
         if ((miss > 0) != (said > 0)) {
-            if (try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | {s} missing={d}", .{ o.me, o.mgr, ready, miss }))) said = miss;
+            if (try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | {s} missing={d}", .{ o.me, o.mgr, ready, miss }))) said = miss;
         }
         if (!swept) {
             swept = true;
             const tasks: []const json.Value = if (board.get("tasks")) |t| (t.asArray() orelse &.{}) else &.{};
             for (tasks) |t| {
                 if (eqStr(strOf(t, "owner"), o.me) and eqStr(strOf(t, "state"), "claimed") and eqStr(strOf(t, "creator"), o.mgr))
-                    _ = try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} the worker restarted before finishing it", .{ o.me, o.mgr, strOf(t, "id") }));
+                    _ = try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} the worker restarted before finishing it", .{ o.me, o.mgr, strOf(t, "id") }));
             }
         }
 
@@ -640,17 +640,17 @@ pub fn worker(ctx: *Ctx, o: WorkerOpts) Error!u8 {
         const title = taskField(a, board, id, "title");
         if (pick.rank > 0) {
             ctx.hooks.sleepSecs(ctx.hooks.ctx, @min(pick.rank, 10) * rank_secs);
-            const b2 = (try crewBoard(ctx, key)) orelse continue;
+            const b2 = (try swarmBoard(ctx, key)) orelse continue;
             if (!eqStr(taskField(a, b2, id, "state"), "open")) continue;
         }
-        if (!try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | CLAIM {s}", .{ o.me, o.mgr, id }))) {
+        if (!try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | CLAIM {s}", .{ o.me, o.mgr, id }))) {
             ctx.hooks.sleepSecs(ctx.hooks.ctx, o.poll);
             continue;
         }
         var holder: []const u8 = "";
         var tries: usize = 0;
         while (tries < 3) : (tries += 1) {
-            if (try crewBoard(ctx, key)) |b3| {
+            if (try swarmBoard(ctx, key)) |b3| {
                 const owner = taskField(a, b3, id, "owner");
                 const state = taskField(a, b3, id, "state");
                 if (owner.len != 0 or state.len != 0) {
@@ -665,12 +665,12 @@ pub fn worker(ctx: *Ctx, o: WorkerOpts) Error!u8 {
             try doTask(ctx, key, o, id, title, base);
             n += 1;
         } else if (holder.len == 0) {
-            _ = try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} the worker could not read the board to confirm its claim", .{ o.me, o.mgr, id }));
+            _ = try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} the worker could not read the board to confirm its claim", .{ o.me, o.mgr, id }));
         }
         if (o.once) break;
         if (o.max > 0 and n >= o.max) break;
     }
-    _ = try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BYE", .{ o.me, o.mgr }));
+    _ = try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BYE", .{ o.me, o.mgr }));
     return 0;
 }
 
@@ -681,7 +681,7 @@ fn doTask(ctx: *Ctx, key: []const u8, o: WorkerOpts, id: []const u8, title: []co
     else
         "";
     const prompt = try std.fmt.allocPrint(a,
-        \\You are @{s}, a worker in an agichan crew. Your manager @{s} assigned you task {s}:
+        \\You are @{s}, a worker in an agichan swarm. Your manager @{s} assigned you task {s}:
         \\
         \\{s}
         \\{s}
@@ -696,7 +696,7 @@ fn doTask(ctx: *Ctx, key: []const u8, o: WorkerOpts, id: []const u8, title: []co
     , .{ o.me, o.mgr, id, title, gitline, o.mgr });
 
     if (o.use_git and !gitStart(a, o.dir, id, base)) {
-        _ = try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} could not check out a branch for it in the worker's clone", .{ o.me, o.mgr, id }));
+        _ = try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} could not check out a branch for it in the worker's clone", .{ o.me, o.mgr, id }));
         return;
     }
     const res = ctx.hooks.runAgent(ctx.hooks.ctx, a, .{ .agent = o.agent, .dir = o.dir, .prompt = prompt, .timeout = o.timeout, .agent_flags = o.agent_flags });
@@ -716,7 +716,7 @@ fn doTask(ctx: *Ctx, key: []const u8, o: WorkerOpts, id: []const u8, title: []co
         const why = try summarize(a, why0, 300);
         break :blk try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} {s}: {s}{s}", .{ o.me, o.mgr, id, def(why, "the agent gave no reason"), def(summary, "no summary"), gnote });
     } else try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} the agent ended without STATUS: done: {s}{s}", .{ o.me, o.mgr, id, def(summary, "no output"), gnote });
-    _ = try crewPost(ctx, key, line);
+    _ = try swarmPost(ctx, key, line);
 }
 
 fn def(s: []const u8, fallback: []const u8) []const u8 {
@@ -781,7 +781,7 @@ fn revokeExpired(ctx: *Ctx, joins: []const u8) Error!void {
     }
 }
 
-/// crew_join_code: issue a one-time code holding a throwaway wallet the sponsor
+/// swarm_join_code: issue a one-time code holding a throwaway wallet the sponsor
 /// invites; returns the code string (null on failure), the exp `ttl_secs` off.
 pub fn joinCodeString(ctx: *Ctx, ttl_secs: u64) Error!?[]const u8 {
     const a = ctx.a;
@@ -813,7 +813,7 @@ pub fn joinCodeString(ctx: *Ctx, ttl_secs: u64) Error!?[]const u8 {
     return try encodeCode(a, payload);
 }
 
-/// crew_join_code: issue and print a one-time code.
+/// swarm_join_code: issue and print a one-time code.
 pub fn joinCode(ctx: *Ctx, ttl_secs: u64) Error!u8 {
     const code = (try joinCodeString(ctx, ttl_secs)) orelse return 1;
     try ctx.out.print("{s}\n", .{code});
@@ -821,7 +821,7 @@ pub fn joinCode(ctx: *Ctx, ttl_secs: u64) Error!u8 {
     return 0;
 }
 
-/// crew_join: join this machine to the channel a code names.
+/// swarm_join: join this machine to the channel a code names.
 pub fn joinChannel(ctx: *Ctx, code: []const u8, dir: []const u8, force: bool) Error!u8 {
     const a = ctx.a;
     const payload = decodeCode(a, code) catch return refuse(ctx, "that is not a join code");
@@ -898,9 +898,9 @@ pub fn identity(ctx: *Ctx, handle: []const u8) Error!u8 {
 
 // workers -------------------------------------------------------------------
 
-/// crew_alive: the worker recorded in <handle>.pid is running (on Linux, its
+/// swarm_alive: the worker recorded in <handle>.pid is running (on Linux, its
 /// argv still names the handle, so a reused pid runs something else).
-fn crewAlive(ctx: *Ctx, handle: []const u8) bool {
+fn swarmAlive(ctx: *Ctx, handle: []const u8) bool {
     const a = ctx.a;
     const pidf = std.fmt.allocPrint(a, "{s}{s}workers{s}{s}.pid", .{ ctx.data_dir, data.sep, data.sep, handle }) catch return false;
     const pid = switch (data.readTrim(a, pidf) catch return false) {
@@ -923,7 +923,7 @@ pub const WorkersOpts = struct {
     parallel: u64 = 4,
 };
 
-/// crew_workers_start: clone a repo and set up a wallet per worker, then spawn
+/// swarm_workers_start: clone a repo and set up a wallet per worker, then spawn
 /// each as a detached `agichan worker` process. Setup is sequential here (the
 /// bash batched it only for speed). Returns 1 if any worker could not be set up.
 pub fn workersStart(ctx: *Ctx, o: WorkersOpts) Error!u8 {
@@ -940,7 +940,7 @@ pub fn workersStart(ctx: *Ctx, o: WorkersOpts) Error!u8 {
     while (i <= o.count) : (i += 1) {
         const h = try std.fmt.allocPrint(a, "{s}-{d}", .{ o.prefix, i });
         if (!validHandle(h)) return refuse(ctx, try std.fmt.allocPrint(a, "{s} is not a handle", .{h}));
-        if (crewAlive(ctx, h)) {
+        if (swarmAlive(ctx, h)) {
             try ctx.out.print("agichan: @{s} is already running\n", .{h});
             continue;
         }
@@ -1002,7 +1002,7 @@ fn eachPidFile(ctx: *Ctx, comptime f: fn (ctx: *Ctx, handle: []const u8) Error!v
     }
 }
 
-/// crew_workers_stop: ask each named worker (or all) to stop after its task in
+/// swarm_workers_stop: ask each named worker (or all) to stop after its task in
 /// hand, by writing a `.stop` newer than its start. Nothing is killed.
 pub fn workersStop(ctx: *Ctx, handles: []const []const u8) Error!u8 {
     const a = ctx.a;
@@ -1037,7 +1037,7 @@ pub fn workersList(ctx: *Ctx) Error!u8 {
     while (it.next() catch null) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".pid")) continue;
         const h = entry.name[0 .. entry.name.len - 4];
-        if (crewAlive(ctx, h)) {
+        if (swarmAlive(ctx, h)) {
             const pidf = try std.fmt.allocPrint(a, "{s}{s}{s}.pid", .{ wd, data.sep, h });
             const pid = switch (try data.readTrim(a, pidf)) {
                 .some => |v| std.mem.trim(u8, v, " \t\r\n"),
@@ -1053,19 +1053,19 @@ pub fn workersList(ctx: *Ctx) Error!u8 {
 
 pub fn rosterCmd(ctx: *Ctx) Error!u8 {
     try ensureSponsor(ctx);
-    const board = (try crewBoard(ctx, ctx.sponsor)) orelse return failNote(ctx, try std.fmt.allocPrint(ctx.a, "could not read the board of {s}", .{ctx.room}));
+    const board = (try swarmBoard(ctx, ctx.sponsor)) orelse return failNote(ctx, try std.fmt.allocPrint(ctx.a, "could not read the board of {s}", .{ctx.room}));
     const now_ms = ctx.hooks.nowSecs(ctx.hooks.ctx) * 1000;
     try roster(ctx.a, board, now_ms, ctx.out);
     return 0;
 }
 
-/// crew_share: give workers of a machine that joined later this machine's keys
+/// swarm_share: give workers of a machine that joined later this machine's keys
 /// for the recent messages. --missing shares with the ready workers that say so.
 pub fn shareCmd(ctx: *Ctx, args: []const []const u8) Error!u8 {
     const a = ctx.a;
     if (args.len == 0) return refuse(ctx, "usage: agichan share --missing | <handle>...");
     try ensureSponsor(ctx);
-    const board = (try crewBoard(ctx, ctx.sponsor)) orelse return failNote(ctx, try std.fmt.allocPrint(a, "could not read the board of {s}", .{ctx.room}));
+    const board = (try swarmBoard(ctx, ctx.sponsor)) orelse return failNote(ctx, try std.fmt.allocPrint(a, "could not read the board of {s}", .{ctx.room}));
     var hs: std.ArrayListUnmanaged([]const u8) = .empty;
     if (eqStr(args[0], "--missing")) {
         if (board.get("workers")) |ws| if (ws.asObject()) |members| for (members) |m| {
@@ -1120,7 +1120,7 @@ pub fn managerAssign(ctx: *Ctx, lead: []const u8, id: []const u8, who: []const u
     const key = try data.handleKey(a, ctx.keys_dir, lead);
     if (!keyExists(key)) return failNote(ctx, try std.fmt.allocPrint(a, "no wallet for @{s} yet: run agichan identity {s}", .{ lead, lead }));
     const line = try std.fmt.allocPrint(a, "{s} -> @{s} | TASK {s} @{s} {s}", .{ lead, target, id, target, title });
-    if (!try crewPost(ctx, key, line)) return failNote(ctx, "could not post the task");
+    if (!try swarmPost(ctx, key, line)) return failNote(ctx, "could not post the task");
     try ctx.out.print("assigned {s} to @{s}\n", .{ id, target });
     return 0;
 }
@@ -1132,7 +1132,7 @@ pub fn managerStop(ctx: *Ctx, lead: []const u8, who: []const u8) Error!u8 {
     if (!validHandle(target)) return refuse(ctx, "stop <@worker>");
     const key = try data.handleKey(a, ctx.keys_dir, lead);
     if (!keyExists(key)) return failNote(ctx, try std.fmt.allocPrint(a, "no wallet for @{s} yet: run agichan identity {s}", .{ lead, lead }));
-    if (!try crewPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | STOP", .{ lead, target }))) return failNote(ctx, "could not post STOP");
+    if (!try swarmPost(ctx, key, try std.fmt.allocPrint(a, "{s} -> @{s} | STOP", .{ lead, target }))) return failNote(ctx, "could not post STOP");
     try ctx.out.print("asked @{s} to stop\n", .{target});
     return 0;
 }
@@ -1204,7 +1204,7 @@ fn gitFinish(a: Allocator, dir: []const u8, id: []const u8, title: []const u8, p
 /// on timeout; other targets fall back to std.process.Child.run (no timeout).
 fn runAgentReal(a: Allocator, job: AgentJob) AgentResult {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
-    const flags_env = if (job.agent_flags.len != 0) job.agent_flags else (std.process.getEnvVarOwned(a, "CREW_AGENT_FLAGS") catch null);
+    const flags_env = if (job.agent_flags.len != 0) job.agent_flags else (std.process.getEnvVarOwned(a, "SWARM_AGENT_FLAGS") catch null);
     if (eqStr(job.agent, "claude")) {
         argv.appendSlice(a, &.{ "claude", "-p", "--output-format", "text" }) catch return oom();
         appendFlags(a, &argv, flags_env orelse "--permission-mode acceptEdits");
@@ -1327,7 +1327,7 @@ fn jparse(a: Allocator, s: []const u8) json.Value {
     return json.parse(a, s) catch unreachable;
 }
 
-test "crew: secondsOf accepts 30m, 24h, 7d and plain seconds" {
+test "swarm: secondsOf accepts 30m, 24h, 7d and plain seconds" {
     try testing.expectEqual(@as(?u64, 1800), secondsOf("30m"));
     try testing.expectEqual(@as(?u64, 86400), secondsOf("24h"));
     try testing.expectEqual(@as(?u64, 7 * 86400), secondsOf("7d"));
@@ -1338,7 +1338,7 @@ test "crew: secondsOf accepts 30m, 24h, 7d and plain seconds" {
     try testing.expectEqual(@as(?u64, null), secondsOf("12x"));
 }
 
-test "crew: agentName and default worker prefixes (C++/bash fixtures)" {
+test "swarm: agentName and default worker prefixes (C++/bash fixtures)" {
     const a = testing.allocator;
     try testing.expectEqualStrings("claude", agentName("claude"));
     try testing.expectEqualStrings("custom", agentName("bash -c x"));
@@ -1363,7 +1363,7 @@ test "crew: agentName and default worker prefixes (C++/bash fixtures)" {
     try testing.expect(validHandle(p10));
 }
 
-test "crew: agentStatus reads the last STATUS line, markdown and all" {
+test "swarm: agentStatus reads the last STATUS line, markdown and all" {
     const a = testing.allocator;
     const d = try agentStatus(a, "did work\nSTATUS: done");
     defer a.free(d);
@@ -1379,7 +1379,7 @@ test "crew: agentStatus reads the last STATUS line, markdown and all" {
     try testing.expectEqualStrings("", none);
 }
 
-test "crew: summarize drops STATUS lines and one-lines the rest" {
+test "swarm: summarize drops STATUS lines and one-lines the rest" {
     const a = testing.allocator;
     const s = try summarize(a, "wrote docs/\nall done\nSTATUS: done", 400);
     defer a.free(s);
@@ -1389,8 +1389,8 @@ test "crew: summarize drops STATUS lines and one-lines the rest" {
     try testing.expectEqual(@as(usize, 400), capped.len);
 }
 
-// crew.sh selftest: which task an idle worker takes and who claims first.
-test "crew: nextTask directs mine first, then spreads @ALL by rendezvous rank" {
+// swarm.sh selftest: which task an idle worker takes and who claims first.
+test "swarm: nextTask directs mine first, then spreads @ALL by rendezvous rank" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -1444,7 +1444,7 @@ test "crew: nextTask directs mine first, then spreads @ALL by rendezvous rank" {
     try testing.expect(distinct.count() >= 5);
 }
 
-test "crew: nextTask ignores busy, stopping and key-missing workers when ranking" {
+test "swarm: nextTask ignores busy, stopping and key-missing workers when ranking" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -1469,7 +1469,7 @@ test "crew: nextTask ignores busy, stopping and key-missing workers when ranking
 }
 
 
-test "crew: join code round trip and rejects (bash wire format)" {
+test "swarm: join code round trip and rejects (bash wire format)" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -1489,7 +1489,7 @@ test "crew: join code round trip and rejects (bash wire format)" {
     try testing.expect(parseJoinPayload(try decodeCode(a, try encodeCode(a, try joinPayload(a, "!r:x", "rpc", 9, "$(touch x)")))) == null);
 }
 
-test "crew: the real agent runner captures output and enforces the timeout" {
+test "swarm: the real agent runner captures output and enforces the timeout" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     std.fs.cwd().access("/bin/sh", .{}) catch return error.SkipZigTest;
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1504,7 +1504,7 @@ test "crew: the real agent runner captures output and enforces the timeout" {
     try testing.expectEqual(@as(i32, 124), slow.rc);
 }
 
-test "crew: roster shows busy/stopping/gone/idle, open work and the share hint" {
+test "swarm: roster shows busy/stopping/gone/idle, open work and the share hint" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();

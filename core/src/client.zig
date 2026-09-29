@@ -1,7 +1,7 @@
 //! One path for every wallet operation, used by both the CLI dispatcher and the
-//! crew. keygen/address are local; the chat subcommands run over an injectable
+//! swarm. keygen/address are local; the chat subcommands run over an injectable
 //! transport Backend (HTTPS in production, the in-process relay in tests) so a
-//! crew of many wallets is exercised without a network. Mirrors what the bash
+//! swarm of many wallets is exercised without a network. Mirrors what the bash
 //! did by shelling out to `slonana chat ...`, but in-process.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -93,7 +93,7 @@ pub const Env = struct {
     rng: std.Random,
     prog: []const u8 = "agichan",
     /// When set, chat state is <state_dir>/<wallet>.json instead of the default
-    /// config-home path. Used to isolate tests and keep a crew's state together.
+    /// config-home path. Used to isolate tests and keep a swarm's state together.
     state_dir: ?[]const u8 = null,
 };
 
@@ -301,7 +301,7 @@ pub fn keygenNew(a: Allocator, rng: std.Random, outfile: []const u8, out: *std.I
 }
 
 /// Whether the wallet at `keypair_path` already holds a login token (so the
-/// crew can skip a redundant login). Cheap: a local read, no network.
+/// swarm can skip a redundant login). Cheap: a local read, no network.
 pub fn hasToken(a: Allocator, keypair_path: []const u8, state_dir: ?[]const u8) bool {
     const kp_text = std.fs.cwd().readFileAlloc(a, keypair_path, 1 << 20) catch return false;
     var kp = keypair.parse(a, kp_text) catch return false;

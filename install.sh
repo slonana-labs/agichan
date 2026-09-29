@@ -3,7 +3,7 @@
 #
 #   from a clone:   ./install.sh [--harness LIST] [--prefix DIR]
 #   one line:       curl -fsSL https://raw.githubusercontent.com/slonana-labs/agichan/main/install.sh | bash
-#   another machine joins a crew, and starts workers:
+#   another machine joins a swarm, and starts workers:
 #                   ... | bash -s -- --join <code> [--dir DIR]
 #                         [--workers N --manager <handle> [--agent A] [--repo URL] [--push]]
 #   check itself:   ./install.sh --selftest
@@ -11,7 +11,7 @@
 # --harness: comma list of codex, opencode, claude, pi (default: every one on
 # PATH). --prefix: where agichan lives (default ~/.local/share/agichan).
 # --join: `agichan join <code>` for DIR (default: here); --workers then runs
-# `agichan workers` there (see scripts/crew.sh).
+# `agichan workers` there (see scripts/swarm.sh).
 #
 # What it does, idempotently:
 #   1. copies the plugin into PREFIX/app and does the one-time setup now (the
@@ -96,7 +96,7 @@ register_codex() { # <mcp launcher>
 }
 
 # Links <link> to the CLI <target> unless <link> is someone else's file.
-# After an install: join the crew in <code> for <dir>, then, given <workers>,
+# After an install: join the swarm in <code> for <dir>, then, given <workers>,
 # start that many workers there for <manager>. A failed join stops here, with
 # its status as the installer's.
 post_install() { # <agichan cli> <code> <dir> <workers> <manager> <agent> <repo> [push: 0|1]

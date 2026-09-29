@@ -1,6 +1,6 @@
-# Temporary machines for a crew
+# Temporary machines for a swarm
 
-A crew grows by machines. Any machine joins with a one-time code (`agichan
+A swarm grows by machines. Any machine joins with a one-time code (`agichan
 join-code`, then `agichan join`); a fresh cloud machine can do it by itself
 at first boot.
 

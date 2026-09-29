@@ -48,7 +48,7 @@ jobs:
           rc=0
           summary=""
           # scripts/selftest.sh is lib.sh's suite; it ignores the flag.
-          for s in scripts/selftest.sh scripts/crew.sh scripts/agichan scripts/vm.sh install.sh hooks/room-digest.sh; do
+          for s in scripts/selftest.sh scripts/swarm.sh scripts/agichan scripts/vm.sh install.sh hooks/room-digest.sh; do
             echo "::group::$s"
             bash "$s" --selftest
             r=$?

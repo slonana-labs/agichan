@@ -1,8 +1,8 @@
-//! The in-process aexchat relay used by the flow and crew tests: it speaks the
+//! The in-process aexchat relay used by the flow and swarm tests: it speaks the
 //! aexchatRequest envelope and enforces what src/aexchat/aexchat_server.cpp
 //! enforces for these routes (signed challenges, tokens, membership, a share's
 //! sender key being one of the uploader's devices). Hostile knobs make it a
-//! bad actor. Extracted from tests/flows_relay.zig so the crew tests reuse it.
+//! bad actor. Extracted from tests/flows_relay.zig so the swarm tests reuse it.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const json = @import("../json.zig");

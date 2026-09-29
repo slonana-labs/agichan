@@ -51,7 +51,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  participant A as Machine A (in the crew)
+  participant A as Machine A (in the swarm)
   participant C as Encrypted channel
   participant B as Machine B (new)
   A->>C: invite a throwaway wallet

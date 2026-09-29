@@ -1,6 +1,6 @@
-//! An in-process crew: a sponsor creates a channel, a manager (@lead) and two
+//! An in-process swarm: a sponsor creates a channel, a manager (@lead) and two
 //! workers get wallets, the manager posts two @ALL tasks, and each worker
-//! claims one, "runs" a stub agent and posts DONE. It drives the real crew loop
+//! claims one, "runs" a stub agent and posts DONE. It drives the real swarm loop
 //! and the real end-to-end encryption over the in-process relay, with the side
 //! effects (clock, sleep, agent) stubbed so nothing sleeps or spawns. This is
 //! the "manager + >=2 workers claiming/finishing tasks" check.
@@ -9,7 +9,7 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const json = @import("../json.zig");
 const client = @import("../client.zig");
-const crew = @import("../crew.zig");
+const swarm = @import("../swarm.zig");
 const keypair = @import("../keypair.zig");
 const base58 = @import("../base58.zig");
 const Relay = @import("relay.zig").Relay;
@@ -21,7 +21,7 @@ const Hooks = struct {
         return 1790000000;
     }
     fn sleepSecs(_: *anyopaque, _: u64) void {}
-    fn runAgent(_: *anyopaque, a: Allocator, _: crew.AgentJob) crew.AgentResult {
+    fn runAgent(_: *anyopaque, a: Allocator, _: swarm.AgentJob) swarm.AgentResult {
         return .{ .rc = 0, .output = a.dupe(u8, stub_agent_output) catch "STATUS: done" };
     }
 };
@@ -63,7 +63,7 @@ fn taskOwner(board: json.Value, id: []const u8) []const u8 {
     return "";
 }
 
-test "crew: a manager and two workers finish two tasks end to end" {
+test "swarm: a manager and two workers finish two tasks end to end" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -100,7 +100,7 @@ test "crew: a manager and two workers finish two tasks end to end" {
 
     var out: std.Io.Writer.Allocating = .init(a);
     var err: std.Io.Writer.Allocating = .init(a);
-    var ctx: crew.Ctx = .{
+    var ctx: swarm.Ctx = .{
         .a = a,
         .env = env,
         .room = room,
@@ -115,7 +115,7 @@ test "crew: a manager and two workers finish two tasks end to end" {
 
     // The manager and two workers each get a wallet in the channel.
     for ([_][]const u8{ "lead", "w1", "w2" }) |h| {
-        const code = crew.identity(&ctx, h) catch |e| {
+        const code = swarm.identity(&ctx, h) catch |e| {
             std.debug.print("identity {s} error {s}: {s}\n", .{ h, @errorName(e), err.written() });
             return e;
         };
@@ -124,16 +124,16 @@ test "crew: a manager and two workers finish two tasks end to end" {
     }
 
     // The manager assigns two @ALL tasks.
-    try testing.expectEqual(@as(u8, 0), try crew.managerAssign(&ctx, "lead", "t1", "@ALL", "do thing one"));
-    try testing.expectEqual(@as(u8, 0), try crew.managerAssign(&ctx, "lead", "t2", "@ALL", "do thing two"));
+    try testing.expectEqual(@as(u8, 0), try swarm.managerAssign(&ctx, "lead", "t1", "@ALL", "do thing one"));
+    try testing.expectEqual(@as(u8, 0), try swarm.managerAssign(&ctx, "lead", "t2", "@ALL", "do thing two"));
 
     // Each worker takes exactly one task, runs the stub agent, posts DONE.
-    const wopts = crew.WorkerOpts{ .me = "w1", .mgr = "lead", .agent = "stub", .dir = root, .poll = 1, .timeout = 5, .max = 1 };
+    const wopts = swarm.WorkerOpts{ .me = "w1", .mgr = "lead", .agent = "stub", .dir = root, .poll = 1, .timeout = 5, .max = 1 };
     const w1 = wopts;
     var w2 = wopts;
     w2.me = "w2";
-    try testing.expectEqual(@as(u8, 0), try crew.worker(&ctx, w1));
-    try testing.expectEqual(@as(u8, 0), try crew.worker(&ctx, w2));
+    try testing.expectEqual(@as(u8, 0), try swarm.worker(&ctx, w1));
+    try testing.expectEqual(@as(u8, 0), try swarm.worker(&ctx, w2));
 
     // The board, as the manager reads it: both tasks done, by different workers.
     const board = try boardOf(env, a, try dataHandleKey(a, keys_dir, "lead"), room);

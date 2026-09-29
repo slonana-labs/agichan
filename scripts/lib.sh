@@ -3,7 +3,7 @@
 #
 # Everything lives in one data dir per user and machine (agichan_data), shared
 # by Claude Code, Codex, opencode and pi, so their sessions on a project are
-# one crew:
+# one swarm:
 #   bin/slonana       the CLI, downloaded from the release site and accepted
 #                     only if its SHA-256 digest carries an Ed25519 signature
 #                     by the PINNED release key, checked with openssl before
@@ -23,7 +23,7 @@ AGICHAN_RPC_DEFAULT="https://rpc.slonana.com"
 AGICHAN_MAX_CLI_MIB=512 # a download unpacking to more is refused unread
 
 # GNU `readlink -f` from plain readlink (macOS before 12.3 has no -f). The entry
-# points (agichan, crew.sh and vm.sh --selftest) inline this loop to find lib.sh.
+# points (agichan, swarm.sh and vm.sh --selftest) inline this loop to find lib.sh.
 agichan_realpath() { # <path of an existing file>
   local p=$1 l
   while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l ;; *) p=$(dirname "$p")/$l ;; esac; done
