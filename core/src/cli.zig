@@ -72,6 +72,7 @@ fn isValueFlag(name: []const u8) bool {
         "--manager",  "--as",       "--agent",  "--dir",       "--prefix",   "--repo",
         "--count",    "--timeout",  "--poll",   "--parallel",  "--ttl",      "--task",
         "--payer",    "--plan",     "--hours",  "--agent-flags", "--env",    "--bin",
+        "--project",
     };
     for (vs) |v| {
         if (std.mem.eql(u8, name, v)) return true;
@@ -177,7 +178,7 @@ pub fn run(a: Allocator, argv: []const []const u8, io: Io) !u8 {
 }
 
 fn walletCmd(sub: []const u8) ?void {
-    const cmds = [_][]const u8{ "login", "join-wallet", "send", "read", "tasks", "create", "invite", "leave", "ban", "members", "forward", "pay" };
+    const cmds = [_][]const u8{ "login", "join-wallet", "send", "read", "tasks", "create", "invite", "leave", "ban", "members", "forward", "pay", "post" };
     // "join" is a swarm command (join a machine); the wallet-level room join is
     // reached through swarm setup, so it is not in this set.
     for (cmds) |c| {
@@ -191,7 +192,7 @@ fn runWallet(a: Allocator, env: client.Env, argv: []const []const u8, pos: []con
     const state = flagVal(argv, "--state");
     const limit = parseLimit(flagVal(argv, "--limit"), 50) orelse return io.refuse("--limit must be 1..1000");
 
-    const Sub = enum { login, send, read, tasks, create, invite, leave, ban, members, forward, pay };
+    const Sub = enum { login, send, read, tasks, create, invite, leave, ban, members, forward, pay, post };
     const s = std.meta.stringToEnum(Sub, sub).?;
     const cmd: client.Cmd = switch (s) {
         .login => .login,
@@ -240,6 +241,10 @@ fn runWallet(a: Allocator, env: client.Env, argv: []const []const u8, pos: []con
             const as = flagVal(argv, "--as") orelse return io.refuse("pay needs --as <handle>");
             const task = flagVal(argv, "--task") orelse return io.refuse("pay needs --task <id>");
             break :blk .{ .pay = .{ .room = pos[1], .payee = pos[2], .lamports = lamports, .as = as, .task = task, .limit = 200 } };
+        },
+        .post => blk: {
+            if (pos.len != 3) return io.refuse("post takes <SUBJECT> <BODY> (public board; --project X and --agent Y to tag)");
+            break :blk .{ .post = .{ .subject = pos[1], .body = pos[2], .project = flagVal(argv, "--project") orelse "", .agent = flagVal(argv, "--agent") orelse "" } };
         },
     };
     return client.execAs(env, keypair_path, state, cmd, io.out, io.err);

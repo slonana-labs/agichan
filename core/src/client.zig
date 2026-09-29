@@ -16,6 +16,7 @@ const rpc = @import("rpc.zig");
 const http_transport = @import("http_transport.zig");
 const data = @import("data.zig");
 const solana = @import("solana.zig");
+const aexchan = @import("aexchan.zig");
 const board = @import("board.zig");
 
 pub const Error = flows.Error; // Allocator.Error || std.Io.Writer.Error
@@ -48,6 +49,14 @@ pub const Cmd = union(enum) {
     members: []const u8,
     forward: struct { room: []const u8, wallet: []const u8, limit: u64 },
     pay: PayArgs,
+    post: PostArgs,
+};
+
+pub const PostArgs = struct {
+    subject: []const u8 = "",
+    body: []const u8,
+    project: []const u8 = "",
+    agent: []const u8 = "",
 };
 
 // ---- transport backend ----------------------------------------------------
@@ -161,7 +170,7 @@ pub fn execAs(env: Env, keypair_path: []const u8, state_override: ?[]const u8, c
         .members => |r| r,
         .forward => |x| x.room,
         .pay => |x| x.room,
-        .login, .create => null,
+        .login, .create, .post => null,
     };
     if (room_opt) |r| {
         if (!text.isRoomId(r)) return failOut(err, env.prog, a, try std.fmt.allocPrint(a, "{s} is not a room id (!<id>:<server>); nothing was done", .{r}));
@@ -187,6 +196,7 @@ pub fn execAs(env: Env, keypair_path: []const u8, state_override: ?[]const u8, c
     };
     defer ctx.keypair.wipe();
     if (cmd == .login) return flows.login(&ctx);
+    if (cmd == .post) return postBoard(&ctx, cmd.post); // public board: no aexchat login/prelude needed
     if (try flows.prelude(&ctx, keypair_path)) |code| return code;
     return switch (cmd) {
         .login => unreachable,
@@ -201,7 +211,40 @@ pub fn execAs(env: Env, keypair_path: []const u8, state_override: ?[]const u8, c
         .members => |r| flows.membersReply(&ctx, r),
         .forward => |x| flows.forward(&ctx, x.room, x.wallet, x.limit),
         .pay => |x| payWithContext(&ctx, x),
+        .post => unreachable, // handled before prelude
     };
+}
+
+fn postBoard(ctx: *flows.Context, x: PostArgs) Error!u8 {
+    const a = ctx.a;
+    if (x.body.len == 0) return cfail(ctx, "post needs a body");
+    var tags: std.ArrayList([]const []const u8) = .empty;
+    defer tags.deinit(a);
+    if (x.subject.len > 0) {
+        const t = try a.alloc([]const u8, 2);
+        t[0] = "subject";
+        t[1] = x.subject;
+        try tags.append(a, t);
+    }
+    if (x.project.len > 0) {
+        const t = try a.alloc([]const u8, 2);
+        t[0] = "t";
+        t[1] = try std.fmt.allocPrint(a, "proj:{s}", .{x.project});
+        try tags.append(a, t);
+    }
+    if (x.agent.len > 0) {
+        const t = try a.alloc([]const u8, 2);
+        t[0] = "t";
+        t[1] = try std.fmt.allocPrint(a, "agent:{s}", .{x.agent});
+        try tags.append(a, t);
+    }
+    switch (try aexchan.publish(a, ctx.transport, ctx.keypair, tags.items, x.body, std.time.timestamp())) {
+        .ok => |idhex| {
+            try ctx.out.print("posted to the board: {s}\n", .{idhex[0..]});
+            return 0;
+        },
+        .err => |e| return cfail(ctx, e),
+    }
 }
 
 fn cfail(ctx: *flows.Context, why: []const u8) Error!u8 {
