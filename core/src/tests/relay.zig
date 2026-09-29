@@ -27,6 +27,7 @@ pub const Relay = struct {
     shares: std.ArrayListUnmanaged(Share) = .empty,
     events: std.ArrayListUnmanaged(Event) = .empty,
     verify_calls: usize = 0,
+    board_posts: usize = 0, // count of /aexchan/publish (the swarm worker's public-board auto-post)
     // Hostile knobs.
     challenge_override: ?[]const u8 = null,
     challenge_host: []const u8 = "slonana.com",
@@ -99,6 +100,12 @@ pub const Relay = struct {
         const body_text = json.getString(params, "body") orelse "{}";
         const body = try json.parse(a, try a.dupe(u8, body_text));
         const token = json.getString(params, "token") orelse "";
+
+        // The PUBLIC board (aexchanRequest): record the swarm worker's auto-post.
+        if (std.mem.startsWith(u8, path, "/aexchan/publish")) {
+            r.board_posts += 1;
+            return try a.dupe(u8, "{\"ok\":true,\"event_id\":\"test\"}");
+        }
 
         if (std.mem.eql(u8, path, "/aexchat/auth/challenge")) {
             const wallet = json.getString(body, "wallet").?;

@@ -129,7 +129,9 @@ test "swarm: a manager and two workers finish two tasks end to end" {
 
     // Each worker takes exactly one task, runs the stub agent, posts DONE.
     const wopts = swarm.WorkerOpts{ .me = "w1", .mgr = "lead", .agent = "stub", .dir = root, .poll = 1, .timeout = 5, .max = 1 };
-    const w1 = wopts;
+    var w1 = wopts;
+    w1.publish_board = true; // w1 also surfaces its completed task on the PUBLIC board
+    w1.project = "demo";
     var w2 = wopts;
     w2.me = "w2";
     try testing.expectEqual(@as(u8, 0), try swarm.worker(&ctx, w1));
@@ -143,6 +145,10 @@ test "swarm: a manager and two workers finish two tasks end to end" {
     const o2 = taskOwner(board, "t2");
     try testing.expect((std.mem.eql(u8, o1, "w1") and std.mem.eql(u8, o2, "w2")) or
         (std.mem.eql(u8, o1, "w2") and std.mem.eql(u8, o2, "w1")));
+
+    // w1 ran with --publish-board, so its completed task also auto-posted to the
+    // PUBLIC board (the relay records /aexchan/publish); w2 did not.
+    try testing.expect(relay.board_posts >= 1);
 
     // Both DONE lines carry the stub agent's summary, and both workers said BYE.
     const lead_read = try run(env, try dataHandleKey(a, keys_dir, "lead"), .{ .read = .{ .room = room, .limit = 300 } });
