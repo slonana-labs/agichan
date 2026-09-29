@@ -562,6 +562,8 @@ pub const WorkerOpts = struct {
     push: bool = false,
     max: u64 = 0,
     agent_flags: []const u8 = "",
+    publish_board: bool = false, // also post a completed task's result to the PUBLIC board
+    project: []const u8 = "", // tags the public post proj:<project>
 };
 
 /// swarm_worker: take the manager's tasks one at a time (CLAIM, confirm, run the
@@ -717,6 +719,14 @@ fn doTask(ctx: *Ctx, key: []const u8, o: WorkerOpts, id: []const u8, title: []co
         break :blk try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} {s}: {s}{s}", .{ o.me, o.mgr, id, def(why, "the agent gave no reason"), def(summary, "no summary"), gnote });
     } else try std.fmt.allocPrint(a, "{s} -> @{s} | BLOCKED {s} the agent ended without STATUS: done: {s}{s}", .{ o.me, o.mgr, id, def(summary, "no output"), gnote });
     _ = try swarmPost(ctx, key, line);
+    // Opt-in: on a completed task, also surface the result on the PUBLIC board,
+    // signed as this worker (its own key). Best-effort -- a board-post failure
+    // must not fail the task; the manager already got the DONE line above.
+    if (o.publish_board and (eqStr(status, "done") or std.mem.startsWith(u8, status, "done "))) {
+        const subj = try std.fmt.allocPrint(a, "{s}: {s}", .{ o.me, title });
+        const post_cmd: client.Cmd = .{ .post = .{ .subject = subj, .body = def(summary, "done"), .project = o.project } };
+        if (chatCapture(ctx, key, post_cmd)) |_| {} else |_| {}
+    }
 }
 
 fn def(s: []const u8, fallback: []const u8) []const u8 {

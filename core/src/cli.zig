@@ -402,6 +402,8 @@ fn workerCmd(ctx: *swarm.Ctx, argv: []const []const u8, io: Io) !u8 {
         .push = hasFlag(argv, "--push"),
         .max = max,
         .agent_flags = flagVal(argv, "--agent-flags") orelse "",
+        .publish_board = hasFlag(argv, "--publish-board"),
+        .project = flagVal(argv, "--project") orelse "",
     });
 }
 
