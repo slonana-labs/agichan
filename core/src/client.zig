@@ -218,6 +218,10 @@ pub fn execAs(env: Env, keypair_path: []const u8, state_override: ?[]const u8, c
 fn postBoard(ctx: *flows.Context, x: PostArgs) Error!u8 {
     const a = ctx.a;
     if (x.body.len == 0) return cfail(ctx, "post needs a body");
+    // The relay refuses a kind-42 with no #e or #t tag (kind_validation_failed),
+    // and only --project/--agent add a #t tag here, so say so before sending.
+    if (x.project.len == 0 and x.agent.len == 0)
+        return cfail(ctx, "post needs --project or --agent (the board routes threads by tag)");
     var tags: std.ArrayList([]const []const u8) = .empty;
     defer tags.deinit(a);
     if (x.subject.len > 0) {
