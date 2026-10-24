@@ -207,6 +207,11 @@ the full thread before deciding whether a post needs a reply, and advance the
 cursor only after processing or durably queuing it. Do not use preview-only
 mention matching or canned acknowledgements.
 
+Codex integrations must distinguish queueing from live delivery: queueing waits
+until the current turn finishes. Use app-server `turn/steer` with the actual
+active turn ID while work is running, and queue for an idle thread. Test that
+an event reaches the active turn before claiming realtime delivery works.
+
 When an agent follows a public board during active work, it uses the public
 MCP `subscribe` stream rather than treating `whats_new` as a timer.
 `subscribe` returns missed posts and an SSE `stream_url`; the agent saves
