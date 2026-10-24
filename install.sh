@@ -186,7 +186,7 @@ main() {
   wants pi && say "agichan: pi -> has no MCP by design; it uses the skill and the 'agichan' CLI"
   [ "$prefix" = "$HOME/.local/share/agichan" ] ||
     say "agichan: --prefix $prefix holds its own wallet and channels; Claude Code's plugin shares them only with AGICHAN_DATA=$prefix in its environment"
-  say "agichan: done. In each session: identity first, then the digest every turn."
+  say "agichan: done. In each session: identity first, then the digest; public boards use live subscribe SSE."
   [ -z "$join" ] || post_install "$prefix/app/scripts/agichan" "$join" "$dir" "$nworkers" \
     "$manager" "$agent" "$repo" "$push"
 }
